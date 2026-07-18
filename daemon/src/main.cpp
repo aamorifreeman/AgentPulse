@@ -1,19 +1,26 @@
 // AgentPulse daemon entry point.
 //
-// M0 scope: start cleanly, prove the toolchain (C++20 + SQLite linkage),
-// establish the per-user data directories, run a heartbeat loop, and shut
-// down gracefully on SIGTERM/SIGINT. Metric collection, scheduling, and the
-// socket API arrive in later milestones.
+// M1 scope: sample overall CPU utilization on a timer, persist samples to
+// SQLite, and serve the live value over a Unix-domain socket (newline JSON).
+// The sampler runs on the main thread; the socket server runs on its own
+// thread. Later milestones add jobs, more collectors, and the alert engine.
 
 #include <csignal>
-#include <cstring>
+#include <chrono>
+#include <ctime>
+#include <memory>
 #include <string>
 #include <thread>
 
 #include <sqlite3.h>
 
+#include "db.hpp"
+#include "ipc/api.hpp"
+#include "ipc/socket_server.hpp"
 #include "log.hpp"
+#include "metrics/cpu_sampler.hpp"
 #include "paths.hpp"
+#include "shared_state.hpp"
 
 namespace {
 
@@ -31,51 +38,34 @@ void install_signal_handlers() {
     sa.sa_flags = 0;
     sigaction(SIGTERM, &sa, nullptr);
     sigaction(SIGINT, &sa, nullptr);
-    // Don't die if a child pipe closes; we'll handle child I/O explicitly later.
     signal(SIGPIPE, SIG_IGN);
 }
 
-// Opens (creating if needed) the SQLite database and ensures a meta table
-// exists. Later milestones add the real schema via a migration module.
-bool init_database(const std::string& db_path) {
-    sqlite3* db = nullptr;
-    if (sqlite3_open(db_path.c_str(), &db) != SQLITE_OK) {
-        agentpulse::log_error(std::string("cannot open database: ") +
-                              sqlite3_errmsg(db));
-        sqlite3_close(db);
-        return false;
-    }
-
-    char* err = nullptr;
-    const char* schema =
-        "CREATE TABLE IF NOT EXISTS meta("
-        "  key TEXT PRIMARY KEY,"
-        "  value TEXT NOT NULL);";
-    if (sqlite3_exec(db, schema, nullptr, nullptr, &err) != SQLITE_OK) {
-        agentpulse::log_error(std::string("schema init failed: ") +
-                              (err ? err : "unknown"));
-        sqlite3_free(err);
-        sqlite3_close(db);
-        return false;
-    }
-
-    sqlite3_close(db);
-    return true;
-}
-
-void run_loop() {
+// Samples CPU every `interval`, persisting to the database and publishing the
+// latest value to shared state. Returns when g_stop becomes non-zero.
+void sampler_loop(agentpulse::Database& db, agentpulse::SharedState& state) {
     using namespace std::chrono_literals;
-    constexpr auto heartbeat_interval = 30s;
+    constexpr auto interval = 5s;
     constexpr auto poll_slice = 200ms;
 
-    auto next_beat = std::chrono::steady_clock::now();
+    agentpulse::CpuSampler cpu;
+    cpu.sample();  // establish baseline; first real reading next tick
+
+    auto next = std::chrono::steady_clock::now();
     while (g_stop == 0) {
         auto now = std::chrono::steady_clock::now();
-        if (now >= next_beat) {
-            agentpulse::log_debug("heartbeat");
-            next_beat = now + heartbeat_interval;
+        if (now >= next) {
+            const double percent = cpu.sample();
+            const std::int64_t ts = std::time(nullptr);
+            state.set_cpu(percent, ts);
+            try {
+                db.insert_metric(ts, "system.cpu.percent", percent);
+            } catch (const agentpulse::DbError& e) {
+                agentpulse::log_warn(std::string("metric insert failed: ") +
+                                     e.what());
+            }
+            next = now + interval;
         }
-        // Sleep in small slices so signals are noticed promptly.
         std::this_thread::sleep_for(poll_slice);
     }
 }
@@ -111,17 +101,37 @@ int main(int argc, char** argv) {
     }
     agentpulse::log_info("data dir: " + paths.data_dir.string());
 
-    if (!init_database(paths.database().string())) {
+    // Open the database and apply the schema.
+    std::unique_ptr<agentpulse::Database> db;
+    try {
+        db = std::make_unique<agentpulse::Database>(paths.database().string());
+        agentpulse::migrate(*db);
+    } catch (const agentpulse::DbError& e) {
+        agentpulse::log_error(std::string("database init failed: ") + e.what());
+        return 1;
+    }
+
+    agentpulse::SharedState state;
+    const std::int64_t started_at = std::time(nullptr);
+    agentpulse::Api api(state, started_at);
+
+    agentpulse::SocketServer server;
+    try {
+        server.start(paths.socket().string(),
+                     [&api](const std::string& req) { return api.handle(req); });
+    } catch (const std::exception& e) {
+        agentpulse::log_error(std::string("socket start failed: ") + e.what());
         return 1;
     }
 
     install_signal_handlers();
     agentpulse::log_info("ready");
 
-    run_loop();
+    sampler_loop(*db, state);
 
     agentpulse::log_info(std::string("received signal ") +
                          std::to_string(static_cast<int>(g_stop)) +
                          ", shutting down");
+    server.stop();
     return 0;
 }

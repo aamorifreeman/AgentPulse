@@ -92,8 +92,10 @@ Each milestone is independently demoable.
 - **M0 — Setup.** `brew install cmake`; CMake skeleton, C++20, links SQLite; empty daemon
   starts/stops cleanly; installs as a LaunchAgent.
 - **M1 — Vertical slice (de-risk the seam).** Daemon samples CPU% on a timer, writes to
-  SQLite, and serves it over the Unix socket. Menu-bar app connects and shows live CPU.
-  *End-to-end pipe proven.*
+  SQLite, and serves it over the Unix socket. `apctl` (CLI reference client) connects and
+  shows live CPU. *End-to-end pipe proven.* **The SwiftUI menu-bar app is deferred until
+  the socket API stabilizes (post-M3)** so the GUI isn't built against a moving contract;
+  `apctl` is the client until then.
 - **M2 — Automation core.** Job scheduler (cron), process supervisor: launch, capture
   stdout/stderr, exit code, duration → SQLite. App lists jobs + last run + "Run now".
 - **M3 — System health.** Add memory, disk, thermal collectors. App shows system panel +
