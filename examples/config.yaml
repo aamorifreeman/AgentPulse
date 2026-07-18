@@ -1,0 +1,25 @@
+# AgentPulse job configuration — copy to ~/.config/agentpulse/config.yaml
+#
+# Each job is run via `/bin/sh -c "<command>"`. Scheduled jobs use 5-field
+# cron ("minute hour day-of-month month day-of-week"). All fields except
+# name and command are optional.
+
+jobs:
+  - name: email-scan
+    command: python3 ~/automations/email_scan.py
+    schedule: "0 8 * * *"          # every day at 08:00
+    missed_run_policy: run_on_wake # none | run_on_wake | run_now  (enforced in M5)
+    timeout_seconds: 300           # kill the job (and its children) after 5 min
+    retries: 2                     # additional attempts on failure (M5)
+
+  - name: vault-processor
+    command: ~/automations/process_vault.sh
+    schedule: "*/30 * * * *"       # every 30 minutes
+
+  - name: git-sync
+    command: cd ~/notes && git pull --rebase && git push
+    schedule: "15 */2 * * *"       # at :15 past every 2nd hour
+    timeout_seconds: 120
+
+# Jobs with no `schedule` never fire automatically; trigger them on demand:
+#   apctl run <name>

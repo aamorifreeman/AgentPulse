@@ -17,6 +17,20 @@ public:
     explicit DbError(const std::string& what) : std::runtime_error(what) {}
 };
 
+// A persisted job execution.
+struct RunRecord {
+    std::int64_t id = 0;
+    std::string job_name;
+    std::int64_t started_at = 0;  // unix seconds
+    std::int64_t ended_at = 0;    // unix seconds
+    std::string status;           // success/failed/timeout/spawn_error
+    int exit_code = 0;
+    long duration_ms = 0;
+    std::string stdout_text;
+    std::string stderr_text;
+    std::string trigger;          // schedule/manual/missed
+};
+
 // Minimal RAII wrapper around a SQLite connection.
 //
 // Not thread-safe: SQLite connections must not be shared across threads
@@ -46,6 +60,12 @@ public:
     // The pair is {ts_unix, value}.
     std::optional<std::pair<std::int64_t, double>> latest_metric(
         const std::string& metric);
+
+    // Inserts a completed job run; returns the new row id.
+    std::int64_t insert_run(const RunRecord& run);
+
+    // Returns the most recent run for `job_name`, or nullopt if none.
+    std::optional<RunRecord> last_run(const std::string& job_name);
 
     sqlite3* handle() { return db_; }
 

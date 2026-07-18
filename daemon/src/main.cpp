@@ -14,9 +14,11 @@
 
 #include <sqlite3.h>
 
+#include "config/config.hpp"
 #include "db.hpp"
 #include "ipc/api.hpp"
 #include "ipc/socket_server.hpp"
+#include "jobs/scheduler.hpp"
 #include "log.hpp"
 #include "metrics/cpu_sampler.hpp"
 #include "paths.hpp"
@@ -115,6 +117,26 @@ int main(int argc, char** argv) {
     const std::int64_t started_at = std::time(nullptr);
     agentpulse::Api api(state, started_at);
 
+    // Load jobs and start the scheduler (system monitoring still runs if the
+    // config is absent or empty).
+    std::unique_ptr<agentpulse::Scheduler> scheduler;
+    try {
+        agentpulse::Config config =
+            agentpulse::load_config(paths.config_file().string());
+        agentpulse::log_info("loaded " + std::to_string(config.jobs.size()) +
+                             " job(s) from config");
+        scheduler = std::make_unique<agentpulse::Scheduler>(
+            std::move(config.jobs), paths.database().string(), state);
+        api.set_run_handler([&scheduler](const std::string& name) {
+            return scheduler->request_run(name);
+        });
+        scheduler->start();
+    } catch (const std::exception& e) {
+        agentpulse::log_error(std::string("scheduler init failed: ") +
+                              e.what());
+        return 1;
+    }
+
     agentpulse::SocketServer server;
     try {
         server.start(paths.socket().string(),
@@ -133,5 +155,6 @@ int main(int argc, char** argv) {
                          std::to_string(static_cast<int>(g_stop)) +
                          ", shutting down");
     server.stop();
+    scheduler->stop();
     return 0;
 }

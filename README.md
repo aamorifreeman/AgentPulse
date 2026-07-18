@@ -14,7 +14,7 @@ Early development. Milestone progress:
 
 - [x] **M0** — Project setup & daemon skeleton (CMake, C++20, SQLite, launchd)
 - [x] **M1** — Vertical slice: CPU metric end-to-end (daemon → socket → `apctl`)
-- [ ] **M2** — Automation core: scheduler & process supervisor
+- [x] **M2** — Automation core: scheduler & process supervisor
 - [ ] **M3** — System health collectors (memory, disk, thermal)
 - [ ] **M4** — Alert-rule engine & native notifications
 - [ ] **M5** — Missed-run detection & wake recovery
@@ -31,7 +31,7 @@ macOS. JSON uses [nlohmann/json]; the build prefers a local/Homebrew copy and
 falls back to fetching it:
 
 ```sh
-brew install cmake nlohmann-json         # nlohmann-json optional but avoids a fetch
+brew install cmake nlohmann-json yaml-cpp   # deps (avoids configure-time fetch)
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix)"
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
@@ -41,9 +41,14 @@ Binaries: `build/daemon/agentpulsed` (daemon) and `build/cli/apctl` (client).
 
 ## Run
 
+Optionally register automations by copying [`examples/config.yaml`](examples/config.yaml)
+to `~/.config/agentpulse/config.yaml`, then:
+
 ```sh
-./build/daemon/agentpulsed &          # starts sampling + socket API
-./build/cli/apctl status              # query the daemon
+./build/daemon/agentpulsed &          # samples system + runs scheduled jobs
+./build/cli/apctl status              # CPU + job health
+./build/cli/apctl jobs                # configured jobs, next/last run
+./build/cli/apctl run email-scan      # trigger a job now
 ./build/cli/apctl --watch 2           # live view
 ```
 

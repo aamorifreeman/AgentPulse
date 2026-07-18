@@ -24,10 +24,15 @@ A request is either:
 
 ### Commands
 
-| Command  | Description                          |
-|----------|--------------------------------------|
-| `ping`   | Liveness check.                      |
-| `status` | Current daemon + system snapshot.    |
+| Command       | Description                                    |
+|---------------|------------------------------------------------|
+| `ping`        | Liveness check.                                |
+| `status`      | Current daemon snapshot: CPU + jobs.           |
+| `jobs`        | List configured jobs with next run + last run. |
+| `run <name>`  | Trigger an immediate run of a job.             |
+
+`run` takes a job name, as JSON `{"cmd":"run","job":"email-scan"}` or the bare
+form `run email-scan`.
 
 ## Responses
 
@@ -47,9 +52,28 @@ A response is a JSON object. Success carries `"ok": true`; errors carry
   "ok": true,
   "cmd": "status",
   "daemon": { "started_at": 1752800000 },
-  "cpu": { "valid": true, "percent": 12.3, "sampled_at": 1752800012 }
+  "cpu": { "valid": true, "percent": 12.3, "sampled_at": 1752800012 },
+  "jobs": [
+    {
+      "name": "email-scan",
+      "schedule": "0 8 * * *",
+      "next_run": 1752825600,
+      "running": false,
+      "last_run": {
+        "status": "success",
+        "started_at": 1752739200,
+        "exit_code": 0,
+        "duration_ms": 812,
+        "trigger": "schedule"
+      }
+    }
+  ]
 }
 ```
+
+`jobs` returns `{"ok": true, "cmd": "jobs", "jobs": [ ... ]}` with the same job
+objects. `run` returns `{"ok": true, "cmd": "run", "job": "email-scan",
+"queued": true}` or `{"ok": false, "error": "no such job", "job": "..."}`.
 
 Unknown command:
 

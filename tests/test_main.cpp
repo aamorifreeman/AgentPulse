@@ -8,17 +8,24 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
+#include <fstream>
 #include <string>
 #include <thread>
 
 #include <nlohmann/json.hpp>
 
+#include "config/config.hpp"
 #include "db.hpp"
 #include "ipc/api.hpp"
 #include "ipc/socket_server.hpp"
+#include "jobs/process_runner.hpp"
+#include "jobs/scheduler.hpp"
 #include "metrics/cpu_sampler.hpp"
+#include "schedule/cron.hpp"
 #include "shared_state.hpp"
 
 using json = nlohmann::json;
@@ -140,6 +147,159 @@ void test_socket_roundtrip() {
           "response carries live cpu snapshot");
 }
 
+void test_cron() {
+    std::printf("[cron]\n");
+    check(!agentpulse::CronSchedule::parse("nonsense").has_value(),
+          "malformed expression rejected");
+    check(!agentpulse::CronSchedule::parse("0 8 * *").has_value(),
+          "wrong field count rejected");
+
+    auto daily = agentpulse::CronSchedule::parse("0 8 * * *");
+    check(daily.has_value(), "'0 8 * * *' parses");
+    if (daily) {
+        std::tm tm{};
+        tm.tm_min = 0;
+        tm.tm_hour = 8;
+        tm.tm_mday = 15;
+        tm.tm_mon = 5;
+        tm.tm_year = 126;  // 2026
+        std::time_t base = std::mktime(&tm);
+        auto next = daily->next_after(base);
+        check(next.has_value(), "next_after returns a time");
+        if (next) {
+            std::tm out{};
+            localtime_r(&*next, &out);
+            check(out.tm_hour == 8 && out.tm_min == 0,
+                  "next daily run is at 08:00");
+            check(*next > base, "next run is in the future");
+        }
+    }
+
+    auto quarter = agentpulse::CronSchedule::parse("*/15 * * * *");
+    check(quarter.has_value(), "'*/15 * * * *' parses");
+    if (quarter) {
+        std::time_t base = 1'700'000'000;
+        auto next = quarter->next_after(base);
+        if (next) {
+            std::tm out{};
+            localtime_r(&*next, &out);
+            check(out.tm_min % 15 == 0, "step schedule lands on a quarter hour");
+        }
+    }
+}
+
+void test_config() {
+    std::printf("[config]\n");
+    std::string path = "/tmp/agentpulse_cfg_" + std::to_string(::getpid()) +
+                       ".yaml";
+    {
+        std::ofstream f(path);
+        f << "jobs:\n"
+             "  - name: email-scan\n"
+             "    command: echo scan\n"
+             "    schedule: \"0 8 * * *\"\n"
+             "    missed_run_policy: run_on_wake\n"
+             "    timeout_seconds: 300\n"
+             "    retries: 2\n";
+    }
+    auto cfg = agentpulse::load_config(path);
+    check(cfg.jobs.size() == 1, "one job loaded");
+    if (cfg.jobs.size() == 1) {
+        const auto& j = cfg.jobs[0];
+        check(j.name == "email-scan", "job name parsed");
+        check(j.command == "echo scan", "job command parsed");
+        check(j.schedule.has_value(), "job schedule parsed");
+        check(j.missed_run_policy == agentpulse::MissedRunPolicy::RunOnWake,
+              "missed_run_policy parsed");
+        check(j.timeout_seconds == 300, "timeout parsed");
+        check(j.retries == 2, "retries parsed");
+    }
+    ::unlink(path.c_str());
+
+    // A job missing 'command' must be rejected.
+    std::string bad = path + ".bad";
+    {
+        std::ofstream f(bad);
+        f << "jobs:\n  - name: broken\n";
+    }
+    bool threw = false;
+    try {
+        agentpulse::load_config(bad);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    check(threw, "job missing command is rejected");
+    ::unlink(bad.c_str());
+
+    check(agentpulse::load_config("/tmp/does-not-exist-xyz.yaml").jobs.empty(),
+          "missing file yields empty config");
+}
+
+void test_process_runner() {
+    std::printf("[process_runner]\n");
+    auto ok = agentpulse::run_command("echo hello", 0);
+    check(ok.status == agentpulse::RunStatus::Success, "echo succeeds");
+    check(ok.exit_code == 0, "echo exit 0");
+    check(ok.stdout_text.find("hello") != std::string::npos,
+          "stdout captured");
+
+    auto fail = agentpulse::run_command("exit 3", 0);
+    check(fail.status == agentpulse::RunStatus::Failed, "exit 3 -> failed");
+    check(fail.exit_code == 3, "exit code captured");
+
+    auto err = agentpulse::run_command("echo oops 1>&2", 0);
+    check(err.stderr_text.find("oops") != std::string::npos,
+          "stderr captured");
+
+    auto slow = agentpulse::run_command("sleep 5", 1);
+    check(slow.status == agentpulse::RunStatus::Timeout,
+          "long command times out");
+}
+
+void test_scheduler_manual_run() {
+    std::printf("[scheduler manual run]\n");
+    std::string db_path = "/tmp/agentpulse_sched_" +
+                          std::to_string(::getpid()) + ".db";
+    ::unlink(db_path.c_str());
+
+    agentpulse::Job job;
+    job.name = "hello";
+    job.command = "echo scheduler-ran";
+
+    agentpulse::SharedState state;
+    {
+        agentpulse::Scheduler sched({job}, db_path, state);
+        sched.start();
+
+        check(sched.request_run("hello"), "manual run accepted");
+        check(!sched.request_run("nope"), "unknown job rejected");
+
+        // Wait for the run to complete (bounded).
+        bool done = false;
+        for (int i = 0; i < 40 && !done; ++i) {
+            for (const auto& s : state.jobs()) {
+                if (s.name == "hello" && s.has_last_run && !s.running) {
+                    done = true;
+                    check(s.last_status == "success", "manual run succeeded");
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        check(done, "manual run completed and published");
+        sched.stop();
+    }
+
+    // Verify the run was persisted.
+    agentpulse::Database db(db_path);
+    auto last = db.last_run("hello");
+    check(last.has_value(), "run persisted to database");
+    check(last && last->trigger == "manual", "run trigger recorded");
+
+    ::unlink(db_path.c_str());
+    ::unlink((db_path + "-wal").c_str());
+    ::unlink((db_path + "-shm").c_str());
+}
+
 }  // namespace
 
 int main() {
@@ -147,6 +307,10 @@ int main() {
     test_database();
     test_api();
     test_socket_roundtrip();
+    test_cron();
+    test_config();
+    test_process_runner();
+    test_scheduler_manual_run();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
