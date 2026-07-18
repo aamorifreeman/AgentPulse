@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Per-user LaunchAgent template. install.sh substitutes the __PLACEHOLDER__
+  tokens with absolute paths and installs the result into
+  ~/Library/LaunchAgents/com.aamorifreeman.agentpulse.plist.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aamorifreeman.agentpulse</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PROGRAM__</string>
+    </array>
+
+    <!-- Start at login and keep alive if it exits unexpectedly. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Throttle restart storms. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>__STDOUT__</string>
+    <key>StandardErrorPath</key>
+    <string>__STDERR__</string>
+</dict>
+</plist>
