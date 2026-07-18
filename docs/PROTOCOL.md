@@ -27,8 +27,9 @@ A request is either:
 | Command       | Description                                    |
 |---------------|------------------------------------------------|
 | `ping`        | Liveness check.                                |
-| `status`      | Current daemon snapshot: CPU + jobs.           |
+| `status`      | Current daemon snapshot: CPU + system + jobs + alerts. |
 | `jobs`        | List configured jobs with next run + last run. |
+| `alerts`      | Recent alert transitions (firing/recovered).   |
 | `run <name>`  | Trigger an immediate run of a job.             |
 
 `run` takes a job name, as JSON `{"cmd":"run","job":"email-scan"}` or the bare
@@ -84,6 +85,29 @@ A response is a JSON object. Success carries `"ok": true`; errors carry
 `jobs` returns `{"ok": true, "cmd": "jobs", "jobs": [ ... ]}` with the same job
 objects. `run` returns `{"ok": true, "cmd": "run", "job": "email-scan",
 "queued": true}` or `{"ok": false, "error": "no such job", "job": "..."}`.
+
+`alerts` returns recent transitions:
+
+```json
+{
+  "ok": true,
+  "cmd": "alerts",
+  "alerts": [
+    {
+      "ts": 1752800300,
+      "rule": "sustained-high-cpu",
+      "severity": "serious",
+      "metric": "system.cpu.percent",
+      "kind": "firing",
+      "value": 96.4,
+      "threshold": 90.0,
+      "message": "sustained-high-cpu: system.cpu.percent = 96.4 (greater_than 90)",
+      "attribution": "Google Chrome — 184% CPU",
+      "notified": true
+    }
+  ]
+}
+```
 
 Unknown command:
 

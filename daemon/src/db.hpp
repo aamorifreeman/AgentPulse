@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 struct sqlite3;
 struct sqlite3_stmt;
@@ -29,6 +30,20 @@ struct RunRecord {
     std::string stdout_text;
     std::string stderr_text;
     std::string trigger;          // schedule/manual/missed
+};
+
+// A persisted alert transition.
+struct AlertRecord {
+    std::int64_t id = 0;
+    std::int64_t ts = 0;
+    std::string rule_name;
+    std::string severity;
+    std::string metric;
+    std::string kind;        // firing/recovered
+    double value = 0.0;
+    double threshold = 0.0;
+    std::string message;
+    std::string attribution;
 };
 
 // Minimal RAII wrapper around a SQLite connection.
@@ -66,6 +81,12 @@ public:
 
     // Returns the most recent run for `job_name`, or nullopt if none.
     std::optional<RunRecord> last_run(const std::string& job_name);
+
+    // Inserts an alert transition; returns the new row id.
+    std::int64_t insert_alert(const AlertRecord& alert);
+
+    // Returns up to `limit` most-recent alerts, newest first.
+    std::vector<AlertRecord> recent_alerts(int limit);
 
     sqlite3* handle() { return db_; }
 

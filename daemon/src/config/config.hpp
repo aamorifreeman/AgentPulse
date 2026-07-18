@@ -29,8 +29,35 @@ struct Job {
     int retries = 0;          // additional attempts on failure (M5)
 };
 
+// A comparison operator for an alert rule.
+enum class Condition { GreaterThan, LessThan, AtLeast };
+
+std::string to_string(Condition c);
+
+// An alert rule evaluated against a single metric value. Thresholds are
+// numeric; the thermal state is mapped to its ordinal (nominal=0..critical=3)
+// at load time so the engine only ever compares doubles.
+struct Rule {
+    std::string name;
+    std::string metric;          // e.g. system.cpu.percent
+    Condition condition = Condition::GreaterThan;
+    double threshold = 0.0;
+    int duration_seconds = 0;    // must hold this long before firing
+    int cooldown_seconds = 0;    // minimum gap between fires
+    std::string severity = "warning";  // warning/serious/critical
+};
+
+// Optional window during which non-critical notifications are held back.
+struct QuietHours {
+    bool enabled = false;
+    int start_hour = 0;  // local hour [0,23], inclusive
+    int end_hour = 0;    // local hour [0,23], exclusive; wraps past midnight
+};
+
 struct Config {
     std::vector<Job> jobs;
+    std::vector<Rule> rules;
+    QuietHours quiet_hours;
 };
 
 // Loads and validates the config file. A missing file yields an empty config

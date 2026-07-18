@@ -17,6 +17,8 @@ add_library(agentpulse_core STATIC
     src/schedule/cron.cpp
     src/jobs/process_runner.cpp
     src/jobs/scheduler.cpp
+    src/alerts/alert_engine.cpp
+    src/alerts/notifier.cpp
     src/ipc/socket_server.cpp
     src/ipc/api.cpp
 )

@@ -15,6 +15,20 @@ struct ProcInfo {
     std::uint64_t rss_bytes = 0;
 };
 
+// A recent alert transition, published for the socket API.
+struct AlertInfo {
+    std::int64_t ts = 0;
+    std::string rule_name;
+    std::string severity;
+    std::string metric;
+    std::string kind;  // firing/recovered
+    double value = 0.0;
+    double threshold = 0.0;
+    std::string message;
+    std::string attribution;
+    bool notify = true;
+};
+
 // System health snapshot published by the sampler thread.
 struct SystemSnapshot {
     bool valid = false;
@@ -90,11 +104,22 @@ public:
         return system_;
     }
 
+    void set_alerts(std::vector<AlertInfo> alerts) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        alerts_ = std::move(alerts);
+    }
+
+    std::vector<AlertInfo> alerts() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return alerts_;
+    }
+
 private:
     mutable std::mutex mutex_;
     Cpu cpu_;
     std::vector<JobStatus> jobs_;
     SystemSnapshot system_;
+    std::vector<AlertInfo> alerts_;
 };
 
 }  // namespace agentpulse

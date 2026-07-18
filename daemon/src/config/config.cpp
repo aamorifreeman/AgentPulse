@@ -6,6 +6,8 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include "metrics/thermal_sampler.hpp"
+
 namespace agentpulse {
 
 std::string to_string(MissedRunPolicy policy) {
@@ -15,6 +17,15 @@ std::string to_string(MissedRunPolicy policy) {
         case MissedRunPolicy::RunNow:    return "run_now";
     }
     return "none";
+}
+
+std::string to_string(Condition c) {
+    switch (c) {
+        case Condition::GreaterThan: return "greater_than";
+        case Condition::LessThan:    return "less_than";
+        case Condition::AtLeast:     return "at_least";
+    }
+    return "greater_than";
 }
 
 namespace {
@@ -76,6 +87,65 @@ Job parse_job(const YAML::Node& node, std::size_t index) {
     return job;
 }
 
+Condition parse_condition(const std::string& s) {
+    if (s == "greater_than" || s == ">") return Condition::GreaterThan;
+    if (s == "less_than" || s == "<") return Condition::LessThan;
+    if (s == "at_least" || s == ">=") return Condition::AtLeast;
+    throw std::runtime_error("invalid condition: '" + s + "'");
+}
+
+Rule parse_rule(const YAML::Node& node, std::size_t index) {
+    if (!node.IsMap()) {
+        throw std::runtime_error("rule #" + std::to_string(index) +
+                                 " is not a mapping");
+    }
+    Rule rule;
+    if (!node["name"] || node["name"].as<std::string>().empty()) {
+        throw std::runtime_error("rule #" + std::to_string(index) +
+                                 " is missing 'name'");
+    }
+    rule.name = node["name"].as<std::string>();
+
+    if (!node["metric"]) {
+        throw std::runtime_error("rule '" + rule.name + "' is missing 'metric'");
+    }
+    rule.metric = node["metric"].as<std::string>();
+
+    if (!node["condition"]) {
+        throw std::runtime_error("rule '" + rule.name +
+                                 "' is missing 'condition'");
+    }
+    rule.condition = parse_condition(node["condition"].as<std::string>());
+
+    if (!node["threshold"]) {
+        throw std::runtime_error("rule '" + rule.name +
+                                 "' is missing 'threshold'");
+    }
+    // Thermal thresholds are given as labels; map to the ordinal so the engine
+    // compares numbers uniformly.
+    if (rule.metric == "system.thermal_state") {
+        rule.threshold = static_cast<double>(
+            thermal_state_from_string(node["threshold"].as<std::string>()));
+    } else {
+        rule.threshold = node["threshold"].as<double>();
+    }
+
+    if (node["duration_seconds"]) {
+        rule.duration_seconds = node["duration_seconds"].as<int>();
+    }
+    if (node["cooldown_seconds"]) {
+        rule.cooldown_seconds = node["cooldown_seconds"].as<int>();
+    }
+    if (node["severity"]) {
+        rule.severity = node["severity"].as<std::string>();
+    }
+    if (rule.duration_seconds < 0 || rule.cooldown_seconds < 0) {
+        throw std::runtime_error("rule '" + rule.name +
+                                 "' has negative duration/cooldown");
+    }
+    return rule;
+}
+
 }  // namespace
 
 Config load_config(const std::string& path) {
@@ -106,6 +176,31 @@ Config load_config(const std::string& path) {
             }
             config.jobs.push_back(std::move(job));
         }
+    }
+
+    if (root["rules"]) {
+        if (!root["rules"].IsSequence()) {
+            throw std::runtime_error("'rules' must be a sequence");
+        }
+        std::unordered_set<std::string> names;
+        std::size_t i = 0;
+        for (const auto& node : root["rules"]) {
+            Rule rule = parse_rule(node, i++);
+            if (!names.insert(rule.name).second) {
+                throw std::runtime_error("duplicate rule name: '" + rule.name +
+                                         "'");
+            }
+            config.rules.push_back(std::move(rule));
+        }
+    }
+
+    if (root["quiet_hours"]) {
+        const auto& qh = root["quiet_hours"];
+        config.quiet_hours.enabled = true;
+        if (qh["start_hour"])
+            config.quiet_hours.start_hour = qh["start_hour"].as<int>();
+        if (qh["end_hour"])
+            config.quiet_hours.end_hour = qh["end_hour"].as<int>();
     }
     return config;
 }

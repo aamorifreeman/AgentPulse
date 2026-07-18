@@ -14,6 +14,8 @@
 
 #include <sqlite3.h>
 
+#include "alerts/alert_engine.hpp"
+#include "alerts/notifier.hpp"
 #include "config/config.hpp"
 #include "db.hpp"
 #include "ipc/api.hpp"
@@ -47,16 +49,21 @@ void install_signal_handlers() {
     signal(SIGPIPE, SIG_IGN);
 }
 
-// Samples CPU and system health every `interval`, persisting to the database
-// and publishing the latest values to shared state. Returns when g_stop
-// becomes non-zero.
-void sampler_loop(agentpulse::Database& db, agentpulse::SharedState& state) {
+// Samples CPU and system health every `interval`, evaluates alert rules,
+// persisting metrics/alerts to the database and publishing to shared state.
+// Returns when g_stop becomes non-zero.
+void sampler_loop(agentpulse::Database& db, agentpulse::SharedState& state,
+                  std::vector<agentpulse::Rule> rules,
+                  agentpulse::QuietHours quiet) {
     using namespace std::chrono_literals;
     constexpr auto interval = 5s;
     constexpr auto poll_slice = 200ms;
+    constexpr std::size_t kRecentAlerts = 25;
 
     agentpulse::CpuSampler cpu;
     agentpulse::ProcessSampler procs;
+    agentpulse::AlertEngine engine(std::move(rules), quiet);
+    std::vector<agentpulse::AlertInfo> recent_alerts;
     cpu.sample();     // establish CPU baseline
     procs.top(5);     // establish per-process CPU baseline
 
@@ -70,6 +77,7 @@ void sampler_loop(agentpulse::Database& db, agentpulse::SharedState& state) {
             const agentpulse::DiskSample disk = agentpulse::sample_disk();
             const agentpulse::ThermalState thermal =
                 agentpulse::sample_thermal_state();
+            auto top = procs.top(5);
 
             state.set_cpu(cpu_pct, ts);
 
@@ -87,7 +95,7 @@ void sampler_loop(agentpulse::Database& db, agentpulse::SharedState& state) {
                 sys.disk_used_percent = disk.used_percent;
             }
             sys.thermal_state = agentpulse::to_string(thermal);
-            sys.top_processes = procs.top(5);
+            sys.top_processes = top;
             state.set_system(sys);
 
             try {
@@ -107,6 +115,75 @@ void sampler_loop(agentpulse::Database& db, agentpulse::SharedState& state) {
             } catch (const agentpulse::DbError& e) {
                 agentpulse::log_warn(std::string("metric insert failed: ") +
                                      e.what());
+            }
+
+            // Evaluate alert rules against the freshest values.
+            agentpulse::AlertEngine::MetricMap metric_map;
+            metric_map["system.cpu.percent"] = cpu_pct;
+            if (mem.valid)
+                metric_map["system.memory.percent"] = mem.used_percent;
+            if (disk.valid) {
+                metric_map["system.disk.percent"] = disk.used_percent;
+                metric_map["system.disk.available_gb"] =
+                    static_cast<double>(disk.available_bytes) / 1e9;
+            }
+            metric_map["system.thermal_state"] =
+                static_cast<double>(thermal);
+
+            std::string attribution;
+            if (!top.empty()) {
+                char b[128];
+                std::snprintf(b, sizeof(b), "%s — %.0f%% CPU",
+                              top.front().name.c_str(),
+                              top.front().cpu_percent);
+                attribution = b;
+            }
+
+            auto events = engine.evaluate(metric_map, ts, attribution);
+            for (const auto& e : events) {
+                agentpulse::AlertRecord rec;
+                rec.ts = e.ts;
+                rec.rule_name = e.rule_name;
+                rec.severity = e.severity;
+                rec.metric = e.metric;
+                rec.kind = e.kind;
+                rec.value = e.value;
+                rec.threshold = e.threshold;
+                rec.message = e.message;
+                rec.attribution = e.attribution;
+                try {
+                    db.insert_alert(rec);
+                } catch (const agentpulse::DbError& ex) {
+                    agentpulse::log_warn(std::string("insert_alert failed: ") +
+                                         ex.what());
+                }
+                agentpulse::log_info("ALERT " + e.kind + " [" + e.severity +
+                                     "] " + e.message);
+                if (e.notify) {
+                    std::string body = e.message;
+                    if (!e.attribution.empty()) body += "\n" + e.attribution;
+                    agentpulse::send_notification("AgentPulse: " + e.rule_name,
+                                                  body);
+                }
+
+                agentpulse::AlertInfo info;
+                info.ts = e.ts;
+                info.rule_name = e.rule_name;
+                info.severity = e.severity;
+                info.metric = e.metric;
+                info.kind = e.kind;
+                info.value = e.value;
+                info.threshold = e.threshold;
+                info.message = e.message;
+                info.attribution = e.attribution;
+                info.notify = e.notify;
+                recent_alerts.insert(recent_alerts.begin(), std::move(info));
+            }
+            if (recent_alerts.size() > kRecentAlerts) {
+                recent_alerts.resize(kRecentAlerts);
+            }
+            if (!events.empty()) {
+                state.set_alerts(recent_alerts);
             }
             next = now + interval;
         }
@@ -159,14 +236,19 @@ int main(int argc, char** argv) {
     const std::int64_t started_at = std::time(nullptr);
     agentpulse::Api api(state, started_at);
 
-    // Load jobs and start the scheduler (system monitoring still runs if the
-    // config is absent or empty).
+    // Load jobs + rules and start the scheduler (system monitoring still runs
+    // if the config is absent or empty).
     std::unique_ptr<agentpulse::Scheduler> scheduler;
+    std::vector<agentpulse::Rule> rules;
+    agentpulse::QuietHours quiet;
     try {
         agentpulse::Config config =
             agentpulse::load_config(paths.config_file().string());
         agentpulse::log_info("loaded " + std::to_string(config.jobs.size()) +
-                             " job(s) from config");
+                             " job(s), " + std::to_string(config.rules.size()) +
+                             " rule(s) from config");
+        rules = config.rules;
+        quiet = config.quiet_hours;
         scheduler = std::make_unique<agentpulse::Scheduler>(
             std::move(config.jobs), paths.database().string(), state);
         api.set_run_handler([&scheduler](const std::string& name) {
@@ -191,7 +273,7 @@ int main(int argc, char** argv) {
     install_signal_handlers();
     agentpulse::log_info("ready");
 
-    sampler_loop(*db, state);
+    sampler_loop(*db, state, std::move(rules), quiet);
 
     agentpulse::log_info(std::string("received signal ") +
                          std::to_string(static_cast<int>(g_stop)) +

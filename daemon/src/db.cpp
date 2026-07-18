@@ -162,6 +162,69 @@ std::optional<RunRecord> Database::last_run(const std::string& job_name) {
     return result;
 }
 
+std::int64_t Database::insert_alert(const AlertRecord& alert) {
+    static const char* kSql =
+        "INSERT INTO alerts(ts, rule_name, severity, metric, kind, value,"
+        "                   threshold, message, attribution)"
+        " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?);";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw DbError(std::string("prepare insert_alert: ") +
+                      sqlite3_errmsg(db_));
+    }
+    sqlite3_bind_int64(stmt, 1, alert.ts);
+    sqlite3_bind_text(stmt, 2, alert.rule_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, alert.severity.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, alert.metric.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, alert.kind.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 6, alert.value);
+    sqlite3_bind_double(stmt, 7, alert.threshold);
+    sqlite3_bind_text(stmt, 8, alert.message.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 9, alert.attribution.c_str(), -1, SQLITE_TRANSIENT);
+
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        throw DbError(std::string("step insert_alert: ") + sqlite3_errmsg(db_));
+    }
+    return sqlite3_last_insert_rowid(db_);
+}
+
+std::vector<AlertRecord> Database::recent_alerts(int limit) {
+    static const char* kSql =
+        "SELECT id, ts, rule_name, severity, metric, kind, value, threshold,"
+        "       message, attribution"
+        " FROM alerts ORDER BY ts DESC, id DESC LIMIT ?;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw DbError(std::string("prepare recent_alerts: ") +
+                      sqlite3_errmsg(db_));
+    }
+    sqlite3_bind_int(stmt, 1, limit);
+
+    std::vector<AlertRecord> out;
+    auto text = [&](int col) -> std::string {
+        const unsigned char* s = sqlite3_column_text(stmt, col);
+        return s ? reinterpret_cast<const char*>(s) : "";
+    };
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        AlertRecord a;
+        a.id = sqlite3_column_int64(stmt, 0);
+        a.ts = sqlite3_column_int64(stmt, 1);
+        a.rule_name = text(2);
+        a.severity = text(3);
+        a.metric = text(4);
+        a.kind = text(5);
+        a.value = sqlite3_column_double(stmt, 6);
+        a.threshold = sqlite3_column_double(stmt, 7);
+        a.message = text(8);
+        a.attribution = text(9);
+        out.push_back(std::move(a));
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
 void migrate(Database& db) {
     db.exec(
         "CREATE TABLE IF NOT EXISTS meta("
@@ -190,7 +253,21 @@ void migrate(Database& db) {
         "  trigger     TEXT    NOT NULL);"  // schedule/manual/missed
 
         "CREATE INDEX IF NOT EXISTS idx_runs_job_started"
-        "  ON runs(job_name, started_at);");
+        "  ON runs(job_name, started_at);"
+
+        "CREATE TABLE IF NOT EXISTS alerts("
+        "  id         INTEGER PRIMARY KEY,"
+        "  ts         INTEGER NOT NULL,"  // unix seconds
+        "  rule_name  TEXT    NOT NULL,"
+        "  severity   TEXT    NOT NULL,"
+        "  metric     TEXT    NOT NULL,"
+        "  kind       TEXT    NOT NULL,"  // firing/recovered
+        "  value      REAL    NOT NULL,"
+        "  threshold  REAL    NOT NULL,"
+        "  message    TEXT,"
+        "  attribution TEXT);"
+
+        "CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts);");
 }
 
 }  // namespace agentpulse

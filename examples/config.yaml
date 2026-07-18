@@ -23,3 +23,43 @@ jobs:
 
 # Jobs with no `schedule` never fire automatically; trigger them on demand:
 #   apctl run <name>
+
+# Alert rules evaluated against system metrics each sample tick.
+# metric:    system.cpu.percent | system.memory.percent |
+#            system.disk.available_gb | system.thermal_state
+# condition: greater_than | less_than | at_least
+# threshold: a number, or a thermal label (nominal/fair/serious/critical)
+rules:
+  - name: sustained-high-cpu
+    metric: system.cpu.percent
+    condition: greater_than
+    threshold: 90
+    duration_seconds: 300      # must hold 5 min before firing
+    cooldown_seconds: 1800     # don't re-alert for 30 min
+    severity: serious
+
+  - name: thermal-pressure
+    metric: system.thermal_state
+    condition: at_least
+    threshold: serious
+    cooldown_seconds: 900
+    severity: serious
+
+  - name: low-disk-space
+    metric: system.disk.available_gb
+    condition: less_than
+    threshold: 10
+    severity: critical
+
+  - name: high-memory
+    metric: system.memory.percent
+    condition: greater_than
+    threshold: 90
+    duration_seconds: 120
+
+# Hold non-critical notifications during these local hours (critical still
+# notifies). Wraps past midnight, e.g. start 23, end 7.
+quiet_hours:
+  start_hour: 23
+  end_hour: 7
+

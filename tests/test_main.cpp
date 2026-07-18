@@ -18,6 +18,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "alerts/alert_engine.hpp"
 #include "config/config.hpp"
 #include "db.hpp"
 #include "ipc/api.hpp"
@@ -364,6 +365,104 @@ void test_process_sampler() {
           "processes sorted by cpu descending");
 }
 
+agentpulse::Rule make_rule(const std::string& metric,
+                           agentpulse::Condition cond, double threshold,
+                           int duration, int cooldown,
+                           const std::string& severity = "warning") {
+    agentpulse::Rule r;
+    r.name = metric + "-rule";
+    r.metric = metric;
+    r.condition = cond;
+    r.threshold = threshold;
+    r.duration_seconds = duration;
+    r.cooldown_seconds = cooldown;
+    r.severity = severity;
+    return r;
+}
+
+void test_alert_engine() {
+    std::printf("[alert_engine]\n");
+    using agentpulse::Condition;
+
+    // Duration gate: must exceed threshold for 60s before firing.
+    {
+        agentpulse::AlertEngine eng(
+            {make_rule("system.cpu.percent", Condition::GreaterThan, 90, 60,
+                       300)},
+            {});
+        auto e0 = eng.evaluate({{"system.cpu.percent", 95}}, 1000);
+        check(e0.empty(), "no fire before duration elapses");
+        auto e1 = eng.evaluate({{"system.cpu.percent", 95}}, 1030);
+        check(e1.empty(), "still no fire at 30s");
+        auto e2 = eng.evaluate({{"system.cpu.percent", 95}}, 1060);
+        check(e2.size() == 1 && e2[0].kind == "firing",
+              "fires once duration elapsed");
+
+        // Recovery when value drops back below threshold.
+        auto e3 = eng.evaluate({{"system.cpu.percent", 10}}, 1090);
+        check(e3.size() == 1 && e3[0].kind == "recovered",
+              "recovers when condition clears");
+    }
+
+    // Cooldown: after recovery, re-fire is suppressed until cooldown passes.
+    {
+        agentpulse::AlertEngine eng(
+            {make_rule("system.cpu.percent", Condition::GreaterThan, 90, 0,
+                       300)},
+            {});
+        auto a = eng.evaluate({{"system.cpu.percent", 95}}, 1000);
+        check(a.size() == 1 && a[0].kind == "firing", "fires immediately (0s duration)");
+        eng.evaluate({{"system.cpu.percent", 10}}, 1010);  // recover
+        auto b = eng.evaluate({{"system.cpu.percent", 95}}, 1100);
+        check(b.empty(), "re-fire suppressed within cooldown");
+        auto c = eng.evaluate({{"system.cpu.percent", 95}}, 1400);
+        check(c.size() == 1 && c[0].kind == "firing",
+              "re-fires after cooldown elapses");
+    }
+
+    // Less-than for low disk, and attribution on CPU rules.
+    {
+        agentpulse::AlertEngine eng(
+            {make_rule("system.disk.available_gb", Condition::LessThan, 10, 0,
+                       0)},
+            {});
+        auto e = eng.evaluate({{"system.disk.available_gb", 8.4}}, 500);
+        check(e.size() == 1 && e[0].kind == "firing", "low disk fires");
+    }
+    {
+        agentpulse::AlertEngine eng(
+            {make_rule("system.cpu.percent", Condition::GreaterThan, 90, 0, 0)},
+            {});
+        auto e = eng.evaluate({{"system.cpu.percent", 99}}, 100,
+                              "Chrome — 184% CPU");
+        check(e.size() == 1 && e[0].attribution == "Chrome — 184% CPU",
+              "cpu alert carries process attribution");
+    }
+
+    // Quiet hours suppress notification for non-critical, but not critical.
+    {
+        agentpulse::QuietHours qh;
+        qh.enabled = true;
+        qh.start_hour = 0;
+        qh.end_hour = 24;  // always quiet for the test
+        agentpulse::AlertEngine eng(
+            {make_rule("system.cpu.percent", Condition::GreaterThan, 90, 0, 0,
+                       "warning"),
+             make_rule("system.memory.percent", Condition::GreaterThan, 90, 0,
+                       0, "critical")},
+            qh);
+        auto e = eng.evaluate(
+            {{"system.cpu.percent", 95}, {"system.memory.percent", 95}}, 100);
+        bool warn_suppressed = false, crit_notifies = false;
+        for (const auto& ev : e) {
+            if (ev.severity == "warning" && !ev.notify) warn_suppressed = true;
+            if (ev.severity == "critical" && ev.notify) crit_notifies = true;
+        }
+        check(warn_suppressed, "quiet hours suppress non-critical notify");
+        check(crit_notifies, "critical alerts notify even in quiet hours");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -379,6 +478,7 @@ int main() {
     test_disk_sampler();
     test_thermal_sampler();
     test_process_sampler();
+    test_alert_engine();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

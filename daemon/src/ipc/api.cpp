@@ -94,6 +94,25 @@ json system_to_json(const SystemSnapshot& s) {
     };
 }
 
+json alerts_array(const SharedState& state) {
+    json arr = json::array();
+    for (const auto& a : state.alerts()) {
+        arr.push_back({
+            {"ts", a.ts},
+            {"rule", a.rule_name},
+            {"severity", a.severity},
+            {"metric", a.metric},
+            {"kind", a.kind},
+            {"value", a.value},
+            {"threshold", a.threshold},
+            {"message", a.message},
+            {"attribution", a.attribution},
+            {"notified", a.notify},
+        });
+    }
+    return arr;
+}
+
 }  // namespace
 
 std::string Api::handle(const std::string& request) const {
@@ -115,12 +134,20 @@ std::string Api::handle(const std::string& request) const {
               {"sampled_at", cpu.sampled_at}}},
             {"system", system_to_json(state_.system())},
             {"jobs", jobs_array(state_)},
+            {"alerts", alerts_array(state_)},
         };
         return j.dump();
     }
 
     if (req.cmd == "jobs") {
         return json{{"ok", true}, {"cmd", "jobs"}, {"jobs", jobs_array(state_)}}
+            .dump();
+    }
+
+    if (req.cmd == "alerts") {
+        return json{{"ok", true},
+                    {"cmd", "alerts"},
+                    {"alerts", alerts_array(state_)}}
             .dump();
     }
 
