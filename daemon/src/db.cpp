@@ -178,6 +178,66 @@ int Database::count_runs(const std::string& job_name) {
     return n;
 }
 
+std::vector<std::pair<std::int64_t, double>> Database::metric_history(
+    const std::string& metric, std::int64_t since_ts) {
+    static const char* kSql =
+        "SELECT ts, value FROM metrics WHERE metric = ? AND ts >= ?"
+        " ORDER BY ts ASC;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw DbError(std::string("prepare metric_history: ") +
+                      sqlite3_errmsg(db_));
+    }
+    sqlite3_bind_text(stmt, 1, metric.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, since_ts);
+
+    std::vector<std::pair<std::int64_t, double>> out;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        out.emplace_back(sqlite3_column_int64(stmt, 0),
+                         sqlite3_column_double(stmt, 1));
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+std::vector<RunRecord> Database::recent_runs(const std::string& job_name,
+                                             int limit) {
+    static const char* kSql =
+        "SELECT id, job_name, started_at, ended_at, status, exit_code,"
+        "       duration_ms, stdout, stderr, trigger"
+        " FROM runs WHERE job_name = ? ORDER BY started_at DESC, id DESC"
+        " LIMIT ?;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw DbError(std::string("prepare recent_runs: ") +
+                      sqlite3_errmsg(db_));
+    }
+    sqlite3_bind_text(stmt, 1, job_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, limit);
+
+    auto text = [&](int col) -> std::string {
+        const unsigned char* s = sqlite3_column_text(stmt, col);
+        return s ? reinterpret_cast<const char*>(s) : "";
+    };
+    std::vector<RunRecord> out;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        RunRecord r;
+        r.id = sqlite3_column_int64(stmt, 0);
+        r.job_name = text(1);
+        r.started_at = sqlite3_column_int64(stmt, 2);
+        r.ended_at = sqlite3_column_int64(stmt, 3);
+        r.status = text(4);
+        r.exit_code = sqlite3_column_int(stmt, 5);
+        r.duration_ms = static_cast<long>(sqlite3_column_int64(stmt, 6));
+        r.stdout_text = text(7);
+        r.stderr_text = text(8);
+        r.trigger = text(9);
+        out.push_back(std::move(r));
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
 std::int64_t Database::insert_alert(const AlertRecord& alert) {
     static const char* kSql =
         "INSERT INTO alerts(ts, rule_name, severity, metric, kind, value,"

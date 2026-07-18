@@ -26,6 +26,7 @@
 #include "metrics/disk_sampler.hpp"
 #include "metrics/memory_sampler.hpp"
 #include "metrics/process_sampler.hpp"
+#include "metrics/self_sampler.hpp"
 #include "metrics/thermal_sampler.hpp"
 #include "paths.hpp"
 #include "power/sleep_monitor.hpp"
@@ -33,11 +34,16 @@
 
 namespace {
 
-// Set from a signal handler, so it must be async-signal-safe.
+// Set from signal handlers, so they must be async-signal-safe.
 volatile std::sig_atomic_t g_stop = 0;
+volatile std::sig_atomic_t g_reload = 0;
 
 extern "C" void handle_signal(int signum) {
-    g_stop = signum;
+    if (signum == SIGHUP) {
+        g_reload = 1;
+    } else {
+        g_stop = signum;
+    }
 }
 
 void install_signal_handlers() {
@@ -47,6 +53,7 @@ void install_signal_handlers() {
     sa.sa_flags = 0;
     sigaction(SIGTERM, &sa, nullptr);
     sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGHUP, &sa, nullptr);  // reload config
     signal(SIGPIPE, SIG_IGN);
 }
 
@@ -54,6 +61,7 @@ void install_signal_handlers() {
 // persisting metrics/alerts to the database and publishing to shared state.
 // Returns when g_stop becomes non-zero.
 void sampler_loop(agentpulse::Database& db, agentpulse::SharedState& state,
+                  const std::string& config_path,
                   std::vector<agentpulse::Rule> rules,
                   agentpulse::QuietHours quiet) {
     using namespace std::chrono_literals;
@@ -63,13 +71,33 @@ void sampler_loop(agentpulse::Database& db, agentpulse::SharedState& state,
 
     agentpulse::CpuSampler cpu;
     agentpulse::ProcessSampler procs;
-    agentpulse::AlertEngine engine(std::move(rules), quiet);
+    agentpulse::SelfSampler self;
+    auto engine = std::make_unique<agentpulse::AlertEngine>(std::move(rules),
+                                                            quiet);
     std::vector<agentpulse::AlertInfo> recent_alerts;
     cpu.sample();     // establish CPU baseline
     procs.top(5);     // establish per-process CPU baseline
+    self.sample();    // establish self CPU baseline
 
     auto next = std::chrono::steady_clock::now();
     while (g_stop == 0) {
+        // Config hot-reload (SIGHUP): rebuild the alert engine from disk.
+        // Job changes require a restart; rules and quiet hours reload live.
+        if (g_reload) {
+            g_reload = 0;
+            try {
+                auto cfg = agentpulse::load_config(config_path);
+                engine = std::make_unique<agentpulse::AlertEngine>(
+                    cfg.rules, cfg.quiet_hours);
+                agentpulse::log_info(
+                    "config reloaded: " + std::to_string(cfg.rules.size()) +
+                    " rule(s) (job changes need a restart)");
+            } catch (const std::exception& e) {
+                agentpulse::log_warn(std::string("config reload failed: ") +
+                                     e.what());
+            }
+        }
+
         auto now = std::chrono::steady_clock::now();
         if (now >= next) {
             const std::int64_t ts = std::time(nullptr);
@@ -79,8 +107,12 @@ void sampler_loop(agentpulse::Database& db, agentpulse::SharedState& state,
             const agentpulse::ThermalState thermal =
                 agentpulse::sample_thermal_state();
             auto top = procs.top(5);
+            const agentpulse::SelfStats self_stats = self.sample();
 
             state.set_cpu(cpu_pct, ts);
+            if (self_stats.valid) {
+                state.set_self(self_stats.rss_bytes, self_stats.cpu_percent);
+            }
 
             agentpulse::SystemSnapshot sys;
             sys.valid = true;
@@ -113,6 +145,12 @@ void sampler_loop(agentpulse::Database& db, agentpulse::SharedState& state,
                 }
                 db.insert_metric(ts, "system.thermal.level",
                                  static_cast<double>(thermal));
+                if (self_stats.valid) {
+                    db.insert_metric(ts, "daemon.rss_bytes",
+                                     static_cast<double>(self_stats.rss_bytes));
+                    db.insert_metric(ts, "daemon.cpu.percent",
+                                     self_stats.cpu_percent);
+                }
             } catch (const agentpulse::DbError& e) {
                 agentpulse::log_warn(std::string("metric insert failed: ") +
                                      e.what());
@@ -140,7 +178,7 @@ void sampler_loop(agentpulse::Database& db, agentpulse::SharedState& state,
                 attribution = b;
             }
 
-            auto events = engine.evaluate(metric_map, ts, attribution);
+            auto events = engine->evaluate(metric_map, ts, attribution);
             for (const auto& e : events) {
                 agentpulse::AlertRecord rec;
                 rec.ts = e.ts;
@@ -235,7 +273,7 @@ int main(int argc, char** argv) {
 
     agentpulse::SharedState state;
     const std::int64_t started_at = std::time(nullptr);
-    agentpulse::Api api(state, started_at);
+    agentpulse::Api api(state, started_at, paths.database().string());
 
     // Load jobs + rules and start the scheduler (system monitoring still runs
     // if the config is absent or empty).
@@ -267,8 +305,10 @@ int main(int argc, char** argv) {
         server.start(paths.socket().string(),
                      [&api](const std::string& req) { return api.handle(req); });
     } catch (const std::exception& e) {
-        agentpulse::log_error(std::string("socket start failed: ") + e.what());
-        return 1;
+        // Non-fatal: the daemon still samples metrics and runs jobs; only the
+        // query API is unavailable.
+        agentpulse::log_warn(std::string("socket unavailable: ") + e.what() +
+                             " — continuing without the query API");
     }
 
     install_signal_handlers();
@@ -279,7 +319,8 @@ int main(int argc, char** argv) {
     agentpulse::SleepMonitor sleep_monitor;
     sleep_monitor.start([&scheduler] { scheduler->notify_wake(); });
 
-    sampler_loop(*db, state, std::move(rules), quiet);
+    sampler_loop(*db, state, paths.config_file().string(), std::move(rules),
+                 quiet);
 
     agentpulse::log_info(std::string("received signal ") +
                          std::to_string(static_cast<int>(g_stop)) +

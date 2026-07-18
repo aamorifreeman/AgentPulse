@@ -2,10 +2,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
+#include <ctime>
 #include <sstream>
 
 #include <nlohmann/json.hpp>
 
+#include "db.hpp"
 #include "shared_state.hpp"
 
 namespace agentpulse {
@@ -16,26 +19,34 @@ namespace {
 
 struct Request {
     std::string cmd;
-    std::string arg;  // e.g. job name for "run"
+    std::string arg;   // job name / metric name
+    std::string arg2;  // seconds / limit
 };
 
-// Parses a request line: a JSON object {"cmd":..., "job":...} or a bare
-// "cmd [arg]" token sequence.
+// Parses a request line: a JSON object {"cmd":..., "job"/"metric":...,
+// "seconds"/"limit":...} or a bare "cmd [arg] [arg2]" token sequence.
 Request parse_request(const std::string& line) {
     auto parsed = json::parse(line, nullptr, /*allow_exceptions=*/false);
     if (parsed.is_object() && parsed.contains("cmd") &&
         parsed["cmd"].is_string()) {
         Request r;
         r.cmd = parsed["cmd"].get<std::string>();
-        if (parsed.contains("job") && parsed["job"].is_string()) {
-            r.arg = parsed["job"].get<std::string>();
+        for (const char* key : {"job", "metric"}) {
+            if (parsed.contains(key) && parsed[key].is_string()) {
+                r.arg = parsed[key].get<std::string>();
+            }
+        }
+        for (const char* key : {"seconds", "limit"}) {
+            if (parsed.contains(key) && parsed[key].is_number()) {
+                r.arg2 = std::to_string(parsed[key].get<long long>());
+            }
         }
         return r;
     }
 
     Request r;
     std::istringstream ss(line);
-    ss >> r.cmd >> r.arg;
+    ss >> r.cmd >> r.arg >> r.arg2;
     return r;
 }
 
@@ -115,7 +126,21 @@ json alerts_array(const SharedState& state) {
 
 }  // namespace
 
-std::string Api::handle(const std::string& request) const {
+Api::Api(const SharedState& state, std::int64_t started_at,
+         const std::string& db_path)
+    : state_(state), started_at_(started_at) {
+    if (!db_path.empty()) {
+        try {
+            db_ = std::make_unique<Database>(db_path);
+        } catch (const DbError&) {
+            db_.reset();  // history/runs will report unavailable
+        }
+    }
+}
+
+Api::~Api() = default;
+
+std::string Api::handle(const std::string& request) {
     const Request req = parse_request(request);
 
     if (req.cmd == "ping") {
@@ -124,10 +149,14 @@ std::string Api::handle(const std::string& request) const {
 
     if (req.cmd == "status") {
         const SharedState::Cpu cpu = state_.cpu();
+        const SharedState::Self self = state_.self();
         json j{
             {"ok", true},
             {"cmd", "status"},
-            {"daemon", {{"started_at", started_at_}}},
+            {"daemon",
+             {{"started_at", started_at_},
+              {"rss_bytes", self.rss_bytes},
+              {"cpu_percent", self.cpu_percent}}},
             {"cpu",
              {{"valid", cpu.valid},
               {"percent", cpu.percent},
@@ -148,6 +177,63 @@ std::string Api::handle(const std::string& request) const {
         return json{{"ok", true},
                     {"cmd", "alerts"},
                     {"alerts", alerts_array(state_)}}
+            .dump();
+    }
+
+    if (req.cmd == "history") {
+        if (!db_) {
+            return json{{"ok", false}, {"error", "history unavailable"}}.dump();
+        }
+        if (req.arg.empty()) {
+            return json{{"ok", false}, {"error", "missing metric"}}.dump();
+        }
+        long window =
+            req.arg2.empty() ? 3600 : std::strtol(req.arg2.c_str(), nullptr, 10);
+        if (window <= 0) window = 3600;
+        const std::int64_t since =
+            static_cast<std::int64_t>(std::time(nullptr)) - window;
+        json points = json::array();
+        try {
+            for (const auto& [ts, value] : db_->metric_history(req.arg, since)) {
+                points.push_back({{"t", ts}, {"v", value}});
+            }
+        } catch (const DbError& e) {
+            return json{{"ok", false}, {"error", e.what()}}.dump();
+        }
+        return json{{"ok", true}, {"cmd", "history"}, {"metric", req.arg},
+                    {"points", points}}
+            .dump();
+    }
+
+    if (req.cmd == "runs") {
+        if (!db_) {
+            return json{{"ok", false}, {"error", "runs unavailable"}}.dump();
+        }
+        if (req.arg.empty()) {
+            return json{{"ok", false}, {"error", "missing job name"}}.dump();
+        }
+        int limit =
+            req.arg2.empty()
+                ? 20
+                : static_cast<int>(std::strtol(req.arg2.c_str(), nullptr, 10));
+        if (limit <= 0) limit = 20;
+        json arr = json::array();
+        try {
+            for (const auto& r : db_->recent_runs(req.arg, limit)) {
+                arr.push_back({
+                    {"started_at", r.started_at},
+                    {"ended_at", r.ended_at},
+                    {"status", r.status},
+                    {"exit_code", r.exit_code},
+                    {"duration_ms", r.duration_ms},
+                    {"trigger", r.trigger},
+                });
+            }
+        } catch (const DbError& e) {
+            return json{{"ok", false}, {"error", e.what()}}.dump();
+        }
+        return json{{"ok", true}, {"cmd", "runs"}, {"job", req.arg},
+                    {"runs", arr}}
             .dump();
     }
 

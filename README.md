@@ -18,11 +18,48 @@ Early development. Milestone progress:
 - [x] **M3** — System health collectors (memory, disk, thermal)
 - [x] **M4** — Alert-rule engine & native notifications
 - [x] **M5** — Missed-run detection & wake recovery
-- [ ] **M6** — Polish, charts & overhead instrumentation
+- [x] **M6** — Polish, charts & overhead instrumentation
 
-> The native menu-bar app (SwiftUI) is intentionally built after the socket
-> API stabilizes (post-M3), so the GUI isn't chasing a moving contract. Until
-> then, `apctl` is the reference client. See [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
+The daemon is feature-complete. The native menu-bar app (SwiftUI) builds on
+the now-stable socket API (see [`docs/PROTOCOL.md`](docs/PROTOCOL.md)); `apctl`
+is the reference client in the meantime.
+
+## Architecture
+
+```
+┌───────────────────────────────┐
+│   apctl / (SwiftUI menu-bar)   │   status · jobs · alerts · history · run
+└───────────────┬───────────────┘
+                │  Unix domain socket, newline-delimited JSON
+┌───────────────▼───────────────┐
+│      agentpulsed  (C++20)      │
+│  metric collectors · scheduler │
+│  process supervisor · alert    │
+│  rule engine · sleep monitor   │
+└───────────────┬───────────────┘
+                │
+┌───────────────▼───────────────┐
+│            SQLite (WAL)        │   metrics · runs · alerts
+└───────────────────────────────┘
+```
+
+- **Collectors** (`metrics/`): CPU (Mach `host_statistics`), memory
+  (`vm_statistics64`), disk (`statfs`), thermal (`ProcessInfo.thermalState`),
+  per-process CPU/RSS (`libproc`), and the daemon's own overhead.
+- **Scheduler** (`jobs/`): cron scheduling, `posix_spawn` supervision with
+  stdout/stderr/exit-code/timeout capture and retries, missed-run detection.
+- **Alert engine** (`alerts/`): duration/cooldown/recovery/severity, process
+  attribution, quiet hours — pure and unit-tested.
+- **Power** (`power/`): IOKit sleep/wake for wake recovery.
+- **IPC** (`ipc/`): Unix-domain-socket server + JSON API.
+
+## Measured overhead
+
+Self-instrumented (`daemon.rss_bytes` / `daemon.cpu.percent`), 5s sampling:
+
+- **RSS:** ~7.3 MB resident.
+- **CPU:** ~0.4% average — a brief spike each 5s sample tick, effectively idle
+  between ticks.
 
 ## Build
 

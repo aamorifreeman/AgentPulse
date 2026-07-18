@@ -24,13 +24,20 @@ A request is either:
 
 ### Commands
 
-| Command       | Description                                    |
-|---------------|------------------------------------------------|
-| `ping`        | Liveness check.                                |
-| `status`      | Current daemon snapshot: CPU + system + jobs + alerts. |
-| `jobs`        | List configured jobs with next run + last run. |
-| `alerts`      | Recent alert transitions (firing/recovered).   |
-| `run <name>`  | Trigger an immediate run of a job.             |
+| Command             | Description                                    |
+|---------------------|------------------------------------------------|
+| `ping`              | Liveness check.                                |
+| `status`            | Current snapshot: daemon overhead + CPU + system + jobs + alerts. |
+| `jobs`              | List configured jobs with next run + last run. |
+| `alerts`            | Recent alert transitions (firing/recovered).   |
+| `history <metric> [seconds]` | Metric samples over a recent window (default 3600s). |
+| `runs <job> [limit]`| Recent runs for a job (default 20).            |
+| `run <name>`        | Trigger an immediate run of a job.             |
+
+`run` takes a job name, as JSON `{"cmd":"run","job":"email-scan"}` or the bare
+form `run email-scan`. `history`/`runs` accept a bare second argument
+(`history system.cpu.percent 600`) or JSON (`{"cmd":"history",
+"metric":"system.cpu.percent","seconds":600}`).
 
 `run` takes a job name, as JSON `{"cmd":"run","job":"email-scan"}` or the bare
 form `run email-scan`.
@@ -52,7 +59,7 @@ A response is a JSON object. Success carries `"ok": true`; errors carry
 {
   "ok": true,
   "cmd": "status",
-  "daemon": { "started_at": 1752800000 },
+  "daemon": { "started_at": 1752800000, "rss_bytes": 7654400, "cpu_percent": 0.4 },
   "cpu": { "valid": true, "percent": 12.3, "sampled_at": 1752800012 },
   "system": {
     "valid": true,
@@ -115,6 +122,11 @@ Unknown command:
 {"ok": false, "error": "unknown command", "cmd": "bogus"}
 ```
 
+`history` returns `{"ok": true, "cmd": "history", "metric": "...", "points":
+[{"t": 1752800000, "v": 12.3}, ...]}` (oldest first). `runs` returns `{"ok":
+true, "cmd": "runs", "job": "...", "runs": [{"started_at": ..., "status":
+"success", "exit_code": 0, "duration_ms": 812, "trigger": "schedule"}, ...]}`.
+
 ## Client
 
 `apctl` is the reference client:
@@ -122,6 +134,18 @@ Unknown command:
 ```sh
 apctl ping
 apctl status
+apctl jobs
+apctl alerts
+apctl history system.cpu.percent 600
+apctl runs email-scan 10
+apctl run email-scan
 apctl --watch 2        # refresh status every 2s
 apctl --socket /path/to/agentpulse.sock status
+```
+
+Reload config without restarting (rules & quiet hours; job changes need a
+restart):
+
+```sh
+kill -HUP $(pgrep agentpulsed)
 ```

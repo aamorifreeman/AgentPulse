@@ -13,6 +13,7 @@ add_library(agentpulse_core STATIC
     src/metrics/disk_sampler.cpp
     src/metrics/thermal_sampler.mm
     src/metrics/process_sampler.cpp
+    src/metrics/self_sampler.cpp
     src/config/config.cpp
     src/schedule/cron.cpp
     src/jobs/process_runner.cpp

@@ -74,6 +74,13 @@ public:
         std::int64_t sampled_at = 0;  // unix seconds
     };
 
+    // The daemon's own resource footprint (overhead instrumentation).
+    struct Self {
+        bool valid = false;
+        std::uint64_t rss_bytes = 0;
+        double cpu_percent = 0.0;
+    };
+
     void set_cpu(double percent, std::int64_t sampled_at) {
         std::lock_guard<std::mutex> lock(mutex_);
         cpu_ = {true, percent, sampled_at};
@@ -82,6 +89,16 @@ public:
     Cpu cpu() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return cpu_;
+    }
+
+    void set_self(std::uint64_t rss_bytes, double cpu_percent) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        self_ = {true, rss_bytes, cpu_percent};
+    }
+
+    Self self() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return self_;
     }
 
     void set_jobs(std::vector<JobStatus> jobs) {
@@ -117,6 +134,7 @@ public:
 private:
     mutable std::mutex mutex_;
     Cpu cpu_;
+    Self self_;
     std::vector<JobStatus> jobs_;
     SystemSnapshot system_;
     std::vector<AlertInfo> alerts_;

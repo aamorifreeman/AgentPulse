@@ -85,6 +85,14 @@ public:
     // Returns the number of persisted runs for `job_name`.
     int count_runs(const std::string& job_name);
 
+    // Returns {ts, value} samples for `metric` with ts >= since_ts, oldest
+    // first (for charting a recent window).
+    std::vector<std::pair<std::int64_t, double>> metric_history(
+        const std::string& metric, std::int64_t since_ts);
+
+    // Returns up to `limit` most-recent runs for `job_name`, newest first.
+    std::vector<RunRecord> recent_runs(const std::string& job_name, int limit);
+
     // Inserts an alert transition; returns the new row id.
     std::int64_t insert_alert(const AlertRecord& alert);
 

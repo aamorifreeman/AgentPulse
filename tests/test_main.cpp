@@ -29,6 +29,7 @@
 #include "metrics/disk_sampler.hpp"
 #include "metrics/memory_sampler.hpp"
 #include "metrics/process_sampler.hpp"
+#include "metrics/self_sampler.hpp"
 #include "metrics/thermal_sampler.hpp"
 #include "schedule/cron.hpp"
 #include "shared_state.hpp"
@@ -386,6 +387,62 @@ void test_scheduler_manual_run() {
     ::unlink((db_path + "-shm").c_str());
 }
 
+void test_self_sampler() {
+    std::printf("[self_sampler]\n");
+    agentpulse::SelfSampler s;
+    auto a = s.sample();
+    check(a.valid, "self sample valid");
+    check(a.rss_bytes > 0, "self RSS > 0");
+    auto b = s.sample();
+    check(b.cpu_percent >= 0.0, "self cpu_percent non-negative");
+}
+
+void test_history_and_runs() {
+    std::printf("[history + runs api]\n");
+    std::string db_path = "/tmp/agentpulse_hist_" +
+                          std::to_string(::getpid()) + ".db";
+    ::unlink(db_path.c_str());
+    const std::int64_t now = std::time(nullptr);
+    {
+        agentpulse::Database db(db_path);
+        agentpulse::migrate(db);
+        db.insert_metric(now - 10, "testm", 5.0);
+        db.insert_metric(now - 5, "testm", 7.0);
+        for (int i = 0; i < 2; ++i) {
+            agentpulse::RunRecord r;
+            r.job_name = "jx";
+            r.started_at = now - 10 + i;
+            r.ended_at = now - 9 + i;
+            r.status = "success";
+            r.exit_code = 0;
+            r.duration_ms = 100;
+            r.trigger = "manual";
+            db.insert_run(r);
+        }
+    }
+
+    agentpulse::SharedState state;
+    agentpulse::Api api(state, 1, db_path);
+
+    auto h = json::parse(
+        api.handle(R"({"cmd":"history","metric":"testm","seconds":3600})"));
+    check(h["ok"] == true, "history ok");
+    check(h["points"].size() == 2, "history returns both points");
+
+    auto r = json::parse(api.handle("runs jx 10"));
+    check(r["ok"] == true, "runs ok");
+    check(r["runs"].size() == 2, "runs returns both records");
+
+    // Unavailable when no db is attached.
+    agentpulse::Api api_nodb(state, 1);
+    auto e = json::parse(api_nodb.handle("history testm"));
+    check(e["ok"] == false, "history unavailable without db");
+
+    ::unlink(db_path.c_str());
+    ::unlink((db_path + "-wal").c_str());
+    ::unlink((db_path + "-shm").c_str());
+}
+
 void test_memory_sampler() {
     std::printf("[memory_sampler]\n");
     auto m = agentpulse::sample_memory();
@@ -562,6 +619,8 @@ int main() {
     test_alert_engine();
     test_missed_run_detection();
     test_scheduler_retries_and_missed();
+    test_self_sampler();
+    test_history_and_runs();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
