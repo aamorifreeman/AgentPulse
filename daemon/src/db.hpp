@@ -82,6 +82,9 @@ public:
     // Returns the most recent run for `job_name`, or nullopt if none.
     std::optional<RunRecord> last_run(const std::string& job_name);
 
+    // Returns the number of persisted runs for `job_name`.
+    int count_runs(const std::string& job_name);
+
     // Inserts an alert transition; returns the new row id.
     std::int64_t insert_alert(const AlertRecord& alert);
 

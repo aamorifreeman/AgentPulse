@@ -25,6 +25,11 @@ public:
     // nullopt if none within the search horizon (~4 years).
     std::optional<std::time_t> next_after(std::time_t after) const;
 
+    // Largest minute-aligned time at or before `at` that matches, or nullopt
+    // if none within the search horizon (~4 years). Used for missed-run
+    // detection: the occurrence that *should* have run most recently.
+    std::optional<std::time_t> prev_before(std::time_t at) const;
+
 private:
     // Index order: minute, hour, day-of-month, month, day-of-week.
     std::array<std::set<int>, 5> fields_;

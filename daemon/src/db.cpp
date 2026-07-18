@@ -162,6 +162,22 @@ std::optional<RunRecord> Database::last_run(const std::string& job_name) {
     return result;
 }
 
+int Database::count_runs(const std::string& job_name) {
+    static const char* kSql = "SELECT COUNT(*) FROM runs WHERE job_name = ?;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw DbError(std::string("prepare count_runs: ") +
+                      sqlite3_errmsg(db_));
+    }
+    sqlite3_bind_text(stmt, 1, job_name.c_str(), -1, SQLITE_TRANSIENT);
+    int n = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        n = sqlite3_column_int(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    return n;
+}
+
 std::int64_t Database::insert_alert(const AlertRecord& alert) {
     static const char* kSql =
         "INSERT INTO alerts(ts, rule_name, severity, metric, kind, value,"

@@ -14,6 +14,17 @@ namespace {
 std::int64_t now_unix() { return std::time(nullptr); }
 }  // namespace
 
+std::optional<std::time_t> detect_missed_run(const CronSchedule& schedule,
+                                             std::int64_t last_run_ts,
+                                             std::int64_t now) {
+    auto prev = schedule.prev_before(static_cast<std::time_t>(now));
+    if (!prev) return std::nullopt;
+    if (last_run_ts >= static_cast<std::int64_t>(*prev)) {
+        return std::nullopt;  // already ran at/after that occurrence
+    }
+    return prev;
+}
+
 Scheduler::Scheduler(std::vector<Job> jobs, const std::string& db_path,
                      SharedState& state)
     : jobs_(std::move(jobs)), db_path_(db_path), state_(state) {
@@ -45,9 +56,11 @@ const Job* Scheduler::find_job(const std::string& name) const {
 
 void Scheduler::start() {
     if (active_.exchange(true)) return;
+    last_wall_ = now_unix();
     loop_thread_ = std::thread(&Scheduler::loop, this);
     log_info("scheduler started with " + std::to_string(jobs_.size()) +
              " job(s)");
+    scan_missed();  // catch runs skipped while the daemon was down/asleep
 }
 
 void Scheduler::stop() {
@@ -70,17 +83,67 @@ void Scheduler::stop() {
 
 bool Scheduler::request_run(const std::string& name) {
     if (find_job(name) == nullptr) return false;
-    std::lock_guard<std::mutex> lock(mutex_);
-    manual_queue_.push_back(name);
+    enqueue(name, "manual");
     return true;
+}
+
+void Scheduler::notify_wake() { wake_pending_.store(true); }
+
+void Scheduler::enqueue(const std::string& name, const std::string& trigger) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    queue_.emplace_back(name, trigger);
+}
+
+void Scheduler::scan_missed() {
+    const std::int64_t now = now_unix();
+    for (const auto& job : jobs_) {
+        if (!job.schedule) continue;
+        if (job.missed_run_policy == MissedRunPolicy::None) continue;
+
+        std::int64_t last_run_ts = 0;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (auto it = last_runs_.find(job.name); it != last_runs_.end()) {
+                last_run_ts = it->second.started_at;
+            }
+        }
+        auto missed = detect_missed_run(*job.schedule, last_run_ts, now);
+        if (!missed) continue;
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto& handled = missed_handled_[job.name];
+            if (handled >= static_cast<std::int64_t>(*missed)) {
+                continue;  // already queued this occurrence
+            }
+            handled = *missed;
+        }
+        log_info("missed run detected for '" + job.name + "' (scheduled " +
+                 std::to_string(*missed) + ", policy " +
+                 to_string(job.missed_run_policy) + ") — queuing");
+        enqueue(job.name, "missed");
+    }
 }
 
 void Scheduler::loop() {
     using namespace std::chrono_literals;
+    // If wall-clock jumps forward far more than a tick, the machine likely
+    // slept; re-scan for missed runs. (Belt-and-suspenders alongside the IOKit
+    // power monitor, and works without any entitlements.)
+    constexpr std::int64_t kWakeGapSeconds = 90;
+
     while (active_.load()) {
         reap_finished();
 
-        const std::int64_t now = now_unix();
+        const std::int64_t wall = now_unix();
+        const bool gap_wake = (wall - last_wall_) > kWakeGapSeconds;
+        last_wall_ = wall;
+        if (gap_wake || wake_pending_.exchange(false)) {
+            log_info("wake detected — scanning for missed runs");
+            scan_missed();
+        }
+
+        const std::int64_t now = wall;
         std::vector<std::pair<Job, std::string>> to_launch;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -90,18 +153,18 @@ void Scheduler::loop() {
                 return it != running_.end() && !it->second->done.load();
             };
 
-            // Manual requests first; keep any whose job is still running.
-            std::vector<std::string> deferred;
-            for (const auto& name : manual_queue_) {
+            // Queued (manual/missed) requests first; defer any still running.
+            std::vector<std::pair<std::string, std::string>> deferred;
+            for (const auto& [name, trigger] : queue_) {
                 const Job* job = find_job(name);
                 if (job == nullptr) continue;
                 if (is_running(name)) {
-                    deferred.push_back(name);
+                    deferred.emplace_back(name, trigger);
                 } else {
-                    to_launch.emplace_back(*job, "manual");
+                    to_launch.emplace_back(*job, trigger);
                 }
             }
-            manual_queue_ = std::move(deferred);
+            queue_ = std::move(deferred);
 
             // Due scheduled jobs.
             for (const auto& job : jobs_) {
@@ -147,35 +210,53 @@ void Scheduler::launch(const Job& job, const std::string& trigger) {
 }
 
 void Scheduler::worker(Job job, std::string trigger, RunningTask* task) {
-    RunResult res = run_command(job.command, job.timeout_seconds);
+    const int attempts = job.retries + 1;
+    RunResult res;
 
-    RunRecord rec;
-    rec.job_name = job.name;
-    rec.started_at = res.started_at;
-    rec.ended_at = res.ended_at;
-    rec.status = to_string(res.status);
-    rec.exit_code = res.exit_code;
-    rec.duration_ms = res.duration_ms;
-    rec.stdout_text = res.stdout_text;
-    rec.stderr_text = res.stderr_text;
-    rec.trigger = trigger;
+    for (int attempt = 1; attempt <= attempts && active_.load(); ++attempt) {
+        res = run_command(job.command, job.timeout_seconds);
 
-    {
-        std::lock_guard<std::mutex> lock(db_mutex_);
-        try {
-            db_->insert_run(rec);
-        } catch (const DbError& e) {
-            log_warn(std::string("insert_run failed: ") + e.what());
+        RunRecord rec;
+        rec.job_name = job.name;
+        rec.started_at = res.started_at;
+        rec.ended_at = res.ended_at;
+        rec.status = to_string(res.status);
+        rec.exit_code = res.exit_code;
+        rec.duration_ms = res.duration_ms;
+        rec.stdout_text = res.stdout_text;
+        rec.stderr_text = res.stderr_text;
+        rec.trigger = trigger;
+
+        {
+            std::lock_guard<std::mutex> lock(db_mutex_);
+            try {
+                db_->insert_run(rec);
+            } catch (const DbError& e) {
+                log_warn(std::string("insert_run failed: ") + e.what());
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            last_runs_[job.name] = std::move(rec);
+        }
+
+        log_info("job '" + job.name + "' finished: " + to_string(res.status) +
+                 " (exit " + std::to_string(res.exit_code) + ", " +
+                 std::to_string(res.duration_ms) + "ms, attempt " +
+                 std::to_string(attempt) + "/" + std::to_string(attempts) +
+                 ")");
+
+        if (res.status == RunStatus::Success) break;
+        if (attempt < attempts) {
+            // Linear backoff (attempt seconds), interruptible on shutdown.
+            const int backoff_s = attempt;
+            log_info("job '" + job.name + "' failed; retrying in " +
+                     std::to_string(backoff_s) + "s");
+            for (int i = 0; i < backoff_s * 10 && active_.load(); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
         }
     }
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        last_runs_[job.name] = std::move(rec);
-    }
-
-    log_info("job '" + job.name + "' finished: " + to_string(res.status) +
-             " (exit " + std::to_string(res.exit_code) + ", " +
-             std::to_string(res.duration_ms) + "ms)");
 
     // Signal completion last so the reaper only joins a returning thread.
     task->done.store(true);

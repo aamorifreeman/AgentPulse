@@ -19,6 +19,7 @@ add_library(agentpulse_core STATIC
     src/jobs/scheduler.cpp
     src/alerts/alert_engine.cpp
     src/alerts/notifier.cpp
+    src/power/sleep_monitor.cpp
     src/ipc/socket_server.cpp
     src/ipc/api.cpp
 )
@@ -30,6 +31,8 @@ target_link_libraries(agentpulse_core PUBLIC
     nlohmann_json::nlohmann_json
     yaml-cpp::yaml-cpp
     "-framework Foundation"
+    "-framework IOKit"
+    "-framework CoreFoundation"
 )
 
 target_compile_definitions(agentpulse_core PUBLIC

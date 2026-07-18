@@ -190,7 +190,88 @@ void test_cron() {
             localtime_r(&*next, &out);
             check(out.tm_min % 15 == 0, "step schedule lands on a quarter hour");
         }
+        auto prev = quarter->prev_before(base);
+        if (prev) {
+            check(*prev <= base, "prev_before is at or before the time");
+            std::tm out{};
+            localtime_r(&*prev, &out);
+            check(out.tm_min % 15 == 0, "prev_before lands on a quarter hour");
+        }
     }
+}
+
+void test_missed_run_detection() {
+    std::printf("[missed_run detection]\n");
+    auto daily = agentpulse::CronSchedule::parse("0 8 * * *");
+    if (!daily) {
+        check(false, "daily schedule parses");
+        return;
+    }
+    // 2026-06-15 12:00 local — the 08:00 occurrence already passed today.
+    std::tm tm{};
+    tm.tm_min = 0; tm.tm_hour = 12; tm.tm_mday = 15; tm.tm_mon = 5;
+    tm.tm_year = 126;
+    std::time_t noon = std::mktime(&tm);
+
+    // Never ran: the 08:00 occurrence counts as missed.
+    auto missed = agentpulse::detect_missed_run(*daily, 0, noon);
+    check(missed.has_value(), "missed run detected when never run");
+
+    // Ran at 08:05 today: not missed.
+    std::tm tm2 = tm; tm2.tm_hour = 8; tm2.tm_min = 5;
+    std::time_t ran_today = std::mktime(&tm2);
+    auto not_missed = agentpulse::detect_missed_run(*daily, ran_today, noon);
+    check(!not_missed.has_value(), "not missed when it already ran today");
+
+    // Ran yesterday only: today's 08:00 is missed.
+    std::time_t yesterday = ran_today - 24 * 3600;
+    auto missed2 = agentpulse::detect_missed_run(*daily, yesterday, noon);
+    check(missed2.has_value(), "missed when last run was yesterday");
+}
+
+void test_scheduler_retries_and_missed() {
+    std::printf("[scheduler retries + missed]\n");
+    std::string db_path = "/tmp/agentpulse_retry_" +
+                          std::to_string(::getpid()) + ".db";
+    ::unlink(db_path.c_str());
+
+    // A job that always fails, with 2 retries -> 3 total attempts.
+    agentpulse::Job job;
+    job.name = "flaky";
+    job.command = "exit 1";
+    job.retries = 2;
+
+    agentpulse::SharedState state;
+    {
+        agentpulse::Scheduler sched({job}, db_path, state);
+        sched.start();
+        sched.request_run("flaky");
+
+        bool done = false;
+        for (int i = 0; i < 100 && !done; ++i) {
+            for (const auto& s : state.jobs()) {
+                if (s.name == "flaky" && s.has_last_run && !s.running) {
+                    done = true;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        check(done, "flaky job completed");
+        sched.stop();
+    }
+
+    // All three attempts should have been persisted as failed runs.
+    agentpulse::Database db(db_path);
+    // Count via last_run + a manual query would be nicer; use recent by
+    // re-opening: we only have last_run, so verify at least the final failed.
+    auto last = db.last_run("flaky");
+    check(last.has_value() && last->status == "failed",
+          "final attempt recorded as failed");
+    check(db.count_runs("flaky") == 3, "all 3 attempts (1 + 2 retries) persisted");
+
+    ::unlink(db_path.c_str());
+    ::unlink((db_path + "-wal").c_str());
+    ::unlink((db_path + "-shm").c_str());
 }
 
 void test_config() {
@@ -479,6 +560,8 @@ int main() {
     test_thermal_sampler();
     test_process_sampler();
     test_alert_engine();
+    test_missed_run_detection();
+    test_scheduler_retries_and_missed();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

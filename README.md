@@ -17,7 +17,7 @@ Early development. Milestone progress:
 - [x] **M2** — Automation core: scheduler & process supervisor
 - [x] **M3** — System health collectors (memory, disk, thermal)
 - [x] **M4** — Alert-rule engine & native notifications
-- [ ] **M5** — Missed-run detection & wake recovery
+- [x] **M5** — Missed-run detection & wake recovery
 - [ ] **M6** — Polish, charts & overhead instrumentation
 
 > The native menu-bar app (SwiftUI) is intentionally built after the socket

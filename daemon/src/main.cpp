@@ -28,6 +28,7 @@
 #include "metrics/process_sampler.hpp"
 #include "metrics/thermal_sampler.hpp"
 #include "paths.hpp"
+#include "power/sleep_monitor.hpp"
 #include "shared_state.hpp"
 
 namespace {
@@ -273,11 +274,17 @@ int main(int argc, char** argv) {
     install_signal_handlers();
     agentpulse::log_info("ready");
 
+    // Watch for sleep/wake so missed runs are re-evaluated the moment the
+    // machine wakes (the sampler loop's gap detection is the fallback).
+    agentpulse::SleepMonitor sleep_monitor;
+    sleep_monitor.start([&scheduler] { scheduler->notify_wake(); });
+
     sampler_loop(*db, state, std::move(rules), quiet);
 
     agentpulse::log_info(std::string("received signal ") +
                          std::to_string(static_cast<int>(g_stop)) +
                          ", shutting down");
+    sleep_monitor.stop();
     server.stop();
     scheduler->stop();
     return 0;

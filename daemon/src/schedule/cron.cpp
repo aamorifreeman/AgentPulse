@@ -139,4 +139,19 @@ std::optional<std::time_t> CronSchedule::next_after(std::time_t after) const {
     return std::nullopt;
 }
 
+std::optional<std::time_t> CronSchedule::prev_before(std::time_t at) const {
+    // Start at the whole minute at or before `at`.
+    std::time_t t = at - (at % 60);
+
+    constexpr long kMaxMinutes = 4L * 366 * 24 * 60;
+    for (long i = 0; i < kMaxMinutes; ++i, t -= 60) {
+        std::tm tm{};
+        localtime_r(&t, &tm);
+        if (matches(tm)) {
+            return t;
+        }
+    }
+    return std::nullopt;
+}
+
 }  // namespace agentpulse
