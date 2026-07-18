@@ -27,6 +27,11 @@ xcuserdata/
 DerivedData/
 *.xcuserstate
 
+# SwiftPM
+app/.build/
+.swiftpm/
+*.app/
+
 # Editors
 .vscode/
 .idea/

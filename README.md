@@ -20,9 +20,8 @@ Early development. Milestone progress:
 - [x] **M5** — Missed-run detection & wake recovery
 - [x] **M6** — Polish, charts & overhead instrumentation
 
-The daemon is feature-complete. The native menu-bar app (SwiftUI) builds on
-the now-stable socket API (see [`docs/PROTOCOL.md`](docs/PROTOCOL.md)); `apctl`
-is the reference client in the meantime.
+The daemon is feature-complete, with a native **SwiftUI menu-bar app** on top
+(see [`app/`](app)). `apctl` remains the scriptable CLI client.
 
 ## Architecture
 
@@ -91,6 +90,21 @@ to `~/.config/agentpulse/config.yaml`, then:
 
 [nlohmann/json]: https://github.com/nlohmann/json
 
+## Menu-bar app
+
+A native SwiftUI menu-bar app ([`app/`](app)) connects to the daemon over the
+same Unix socket and shows live system health, top processes, job health (with
+**Run**/**Retry** buttons), and recent alerts — and fires native macOS
+notifications when a new alert fires. Requires macOS 13+.
+
+```sh
+./app/make-app.sh                 # builds AgentPulse.app (menu-bar agent)
+open ./app/AgentPulse.app
+```
+
+For development you can also `swift build --package-path app` and run the
+binary directly (notifications need the bundle, so use the `.app` for those).
+
 ## Install as a LaunchAgent
 
 Builds, installs `agentpulsed` to `~/.local/bin`, and loads it as a per-user
@@ -113,6 +127,7 @@ To remove:
 daemon/         C++20 daemon (agentpulsed) + agentpulse_core static lib
   src/          sources (metrics/, ipc/, db, paths, log)
 cli/            apctl — reference socket client
+app/            SwiftUI menu-bar app (SwiftPM) + make-app.sh
 tests/          dependency-free test harness (ctest)
 packaging/      LaunchAgent plist template + install/uninstall scripts
 docs/           PROTOCOL.md — socket API
