@@ -1,0 +1,32 @@
+# Build output
+/build/
+/cmake-build-*/
+*.o
+*.a
+*.dylib
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# SQLite runtime data
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
+# macOS
+.DS_Store
+
+# Xcode / SwiftUI app
+xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+*.xcuserstate
+
+# Editors
+.vscode/
+.idea/
