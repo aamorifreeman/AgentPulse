@@ -7,6 +7,32 @@
 
 namespace agentpulse {
 
+// A process's live resource usage, used for top-N lists and alert attribution.
+struct ProcInfo {
+    int pid = 0;
+    std::string name;
+    double cpu_percent = 0.0;  // may exceed 100 for multi-threaded processes
+    std::uint64_t rss_bytes = 0;
+};
+
+// System health snapshot published by the sampler thread.
+struct SystemSnapshot {
+    bool valid = false;
+    std::int64_t sampled_at = 0;
+
+    std::uint64_t mem_total_bytes = 0;
+    std::uint64_t mem_used_bytes = 0;
+    double mem_used_percent = 0.0;
+
+    std::uint64_t disk_total_bytes = 0;
+    std::uint64_t disk_available_bytes = 0;
+    double disk_used_percent = 0.0;
+
+    std::string thermal_state;  // nominal/fair/serious/critical
+
+    std::vector<ProcInfo> top_processes;  // highest CPU first
+};
+
 // Live status of one job, published by the scheduler for the socket API.
 struct JobStatus {
     std::string name;
@@ -54,10 +80,21 @@ public:
         return jobs_;
     }
 
+    void set_system(SystemSnapshot system) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        system_ = std::move(system);
+    }
+
+    SystemSnapshot system() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return system_;
+    }
+
 private:
     mutable std::mutex mutex_;
     Cpu cpu_;
     std::vector<JobStatus> jobs_;
+    SystemSnapshot system_;
 };
 
 }  // namespace agentpulse

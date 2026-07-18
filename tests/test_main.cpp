@@ -25,6 +25,10 @@
 #include "jobs/process_runner.hpp"
 #include "jobs/scheduler.hpp"
 #include "metrics/cpu_sampler.hpp"
+#include "metrics/disk_sampler.hpp"
+#include "metrics/memory_sampler.hpp"
+#include "metrics/process_sampler.hpp"
+#include "metrics/thermal_sampler.hpp"
 #include "schedule/cron.hpp"
 #include "shared_state.hpp"
 
@@ -300,6 +304,66 @@ void test_scheduler_manual_run() {
     ::unlink((db_path + "-shm").c_str());
 }
 
+void test_memory_sampler() {
+    std::printf("[memory_sampler]\n");
+    auto m = agentpulse::sample_memory();
+    check(m.valid, "memory sample valid");
+    check(m.total_bytes > 0, "total memory > 0");
+    check(m.used_bytes <= m.total_bytes, "used <= total");
+    check(m.used_percent >= 0.0 && m.used_percent <= 100.0,
+          "memory used_percent within [0,100]");
+}
+
+void test_disk_sampler() {
+    std::printf("[disk_sampler]\n");
+    auto d = agentpulse::sample_disk("/");
+    check(d.valid, "disk sample valid");
+    check(d.total_bytes > 0, "total disk > 0");
+    check(d.available_bytes > 0, "available disk > 0");
+    check(d.used_percent >= 0.0 && d.used_percent <= 100.0,
+          "disk used_percent within [0,100]");
+}
+
+void test_thermal_sampler() {
+    std::printf("[thermal_sampler]\n");
+    auto t = agentpulse::sample_thermal_state();
+    std::string s = agentpulse::to_string(t);
+    check(s == "nominal" || s == "fair" || s == "serious" || s == "critical",
+          "thermal state is a known label");
+    check(agentpulse::thermal_state_from_string("serious") ==
+              agentpulse::ThermalState::Serious,
+          "thermal string round-trips");
+    check(agentpulse::thermal_state_from_string("bogus") ==
+              agentpulse::ThermalState::Nominal,
+          "unknown thermal string defaults to nominal");
+}
+
+void test_process_sampler() {
+    std::printf("[process_sampler]\n");
+    agentpulse::ProcessSampler ps;
+    auto first = ps.top(5);
+    check(!first.empty(), "process list non-empty");
+    check(first.size() <= 5, "top(5) returns at most 5");
+    bool any_rss = false;
+    for (const auto& p : first) {
+        if (p.rss_bytes > 0) any_rss = true;
+        if (p.cpu_percent < 0.0) {
+            check(false, "cpu_percent is non-negative");
+        }
+    }
+    check(any_rss, "at least one process reports RSS");
+
+    // Burn some CPU, then a second sample should compute non-negative CPU%.
+    volatile double sink = 0.0;
+    for (long i = 0; i < 30'000'000; ++i) sink += i * 0.3;
+    (void)sink;
+    auto second = ps.top(5);
+    check(!second.empty(), "second process sample non-empty");
+    check(second.size() >= 2 ? second[0].cpu_percent >= second[1].cpu_percent
+                             : true,
+          "processes sorted by cpu descending");
+}
+
 }  // namespace
 
 int main() {
@@ -311,6 +375,10 @@ int main() {
     test_config();
     test_process_runner();
     test_scheduler_manual_run();
+    test_memory_sampler();
+    test_disk_sampler();
+    test_thermal_sampler();
+    test_process_sampler();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

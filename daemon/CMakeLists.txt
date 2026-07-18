@@ -9,6 +9,10 @@ add_library(agentpulse_core STATIC
     src/paths.cpp
     src/db.cpp
     src/metrics/cpu_sampler.cpp
+    src/metrics/memory_sampler.cpp
+    src/metrics/disk_sampler.cpp
+    src/metrics/thermal_sampler.mm
+    src/metrics/process_sampler.cpp
     src/config/config.cpp
     src/schedule/cron.cpp
     src/jobs/process_runner.cpp
@@ -23,6 +27,7 @@ target_link_libraries(agentpulse_core PUBLIC
     SQLite3::SQLite3
     nlohmann_json::nlohmann_json
     yaml-cpp::yaml-cpp
+    "-framework Foundation"
 )
 
 target_compile_definitions(agentpulse_core PUBLIC

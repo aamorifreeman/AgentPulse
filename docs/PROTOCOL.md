@@ -45,7 +45,7 @@ A response is a JSON object. Success carries `"ok": true`; errors carry
 {"ok": true, "cmd": "ping", "reply": "pong"}
 ```
 
-`status` (M1 — CPU only; later milestones extend this):
+`status` (CPU + system health + jobs):
 
 ```json
 {
@@ -53,6 +53,16 @@ A response is a JSON object. Success carries `"ok": true`; errors carry
   "cmd": "status",
   "daemon": { "started_at": 1752800000 },
   "cpu": { "valid": true, "percent": 12.3, "sampled_at": 1752800012 },
+  "system": {
+    "valid": true,
+    "sampled_at": 1752800012,
+    "memory": { "total_bytes": 25769803776, "used_bytes": 12884901888, "used_percent": 50.0 },
+    "disk": { "total_bytes": 494384795648, "available_bytes": 237000000000, "used_percent": 52.0 },
+    "thermal_state": "nominal",
+    "top_processes": [
+      { "pid": 431, "name": "Google Chrome", "cpu_percent": 184.2, "rss_bytes": 1610612736 }
+    ]
+  },
   "jobs": [
     {
       "name": "email-scan",

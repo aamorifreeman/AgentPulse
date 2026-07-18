@@ -21,6 +21,10 @@
 #include "jobs/scheduler.hpp"
 #include "log.hpp"
 #include "metrics/cpu_sampler.hpp"
+#include "metrics/disk_sampler.hpp"
+#include "metrics/memory_sampler.hpp"
+#include "metrics/process_sampler.hpp"
+#include "metrics/thermal_sampler.hpp"
 #include "paths.hpp"
 #include "shared_state.hpp"
 
@@ -43,25 +47,63 @@ void install_signal_handlers() {
     signal(SIGPIPE, SIG_IGN);
 }
 
-// Samples CPU every `interval`, persisting to the database and publishing the
-// latest value to shared state. Returns when g_stop becomes non-zero.
+// Samples CPU and system health every `interval`, persisting to the database
+// and publishing the latest values to shared state. Returns when g_stop
+// becomes non-zero.
 void sampler_loop(agentpulse::Database& db, agentpulse::SharedState& state) {
     using namespace std::chrono_literals;
     constexpr auto interval = 5s;
     constexpr auto poll_slice = 200ms;
 
     agentpulse::CpuSampler cpu;
-    cpu.sample();  // establish baseline; first real reading next tick
+    agentpulse::ProcessSampler procs;
+    cpu.sample();     // establish CPU baseline
+    procs.top(5);     // establish per-process CPU baseline
 
     auto next = std::chrono::steady_clock::now();
     while (g_stop == 0) {
         auto now = std::chrono::steady_clock::now();
         if (now >= next) {
-            const double percent = cpu.sample();
             const std::int64_t ts = std::time(nullptr);
-            state.set_cpu(percent, ts);
+            const double cpu_pct = cpu.sample();
+            const agentpulse::MemorySample mem = agentpulse::sample_memory();
+            const agentpulse::DiskSample disk = agentpulse::sample_disk();
+            const agentpulse::ThermalState thermal =
+                agentpulse::sample_thermal_state();
+
+            state.set_cpu(cpu_pct, ts);
+
+            agentpulse::SystemSnapshot sys;
+            sys.valid = true;
+            sys.sampled_at = ts;
+            if (mem.valid) {
+                sys.mem_total_bytes = mem.total_bytes;
+                sys.mem_used_bytes = mem.used_bytes;
+                sys.mem_used_percent = mem.used_percent;
+            }
+            if (disk.valid) {
+                sys.disk_total_bytes = disk.total_bytes;
+                sys.disk_available_bytes = disk.available_bytes;
+                sys.disk_used_percent = disk.used_percent;
+            }
+            sys.thermal_state = agentpulse::to_string(thermal);
+            sys.top_processes = procs.top(5);
+            state.set_system(sys);
+
             try {
-                db.insert_metric(ts, "system.cpu.percent", percent);
+                db.insert_metric(ts, "system.cpu.percent", cpu_pct);
+                if (mem.valid)
+                    db.insert_metric(ts, "system.memory.percent",
+                                     mem.used_percent);
+                if (disk.valid) {
+                    db.insert_metric(ts, "system.disk.percent",
+                                     disk.used_percent);
+                    db.insert_metric(
+                        ts, "system.disk.available_bytes",
+                        static_cast<double>(disk.available_bytes));
+                }
+                db.insert_metric(ts, "system.thermal.level",
+                                 static_cast<double>(thermal));
             } catch (const agentpulse::DbError& e) {
                 agentpulse::log_warn(std::string("metric insert failed: ") +
                                      e.what());

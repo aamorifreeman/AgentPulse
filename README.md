@@ -15,7 +15,7 @@ Early development. Milestone progress:
 - [x] **M0** — Project setup & daemon skeleton (CMake, C++20, SQLite, launchd)
 - [x] **M1** — Vertical slice: CPU metric end-to-end (daemon → socket → `apctl`)
 - [x] **M2** — Automation core: scheduler & process supervisor
-- [ ] **M3** — System health collectors (memory, disk, thermal)
+- [x] **M3** — System health collectors (memory, disk, thermal)
 - [ ] **M4** — Alert-rule engine & native notifications
 - [ ] **M5** — Missed-run detection & wake recovery
 - [ ] **M6** — Polish, charts & overhead instrumentation

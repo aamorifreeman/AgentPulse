@@ -68,6 +68,32 @@ json jobs_array(const SharedState& state) {
     return arr;
 }
 
+json system_to_json(const SystemSnapshot& s) {
+    json procs = json::array();
+    for (const auto& p : s.top_processes) {
+        procs.push_back({
+            {"pid", p.pid},
+            {"name", p.name},
+            {"cpu_percent", p.cpu_percent},
+            {"rss_bytes", p.rss_bytes},
+        });
+    }
+    return json{
+        {"valid", s.valid},
+        {"sampled_at", s.sampled_at},
+        {"memory",
+         {{"total_bytes", s.mem_total_bytes},
+          {"used_bytes", s.mem_used_bytes},
+          {"used_percent", s.mem_used_percent}}},
+        {"disk",
+         {{"total_bytes", s.disk_total_bytes},
+          {"available_bytes", s.disk_available_bytes},
+          {"used_percent", s.disk_used_percent}}},
+        {"thermal_state", s.thermal_state},
+        {"top_processes", procs},
+    };
+}
+
 }  // namespace
 
 std::string Api::handle(const std::string& request) const {
@@ -87,6 +113,7 @@ std::string Api::handle(const std::string& request) const {
              {{"valid", cpu.valid},
               {"percent", cpu.percent},
               {"sampled_at", cpu.sampled_at}}},
+            {"system", system_to_json(state_.system())},
             {"jobs", jobs_array(state_)},
         };
         return j.dump();
