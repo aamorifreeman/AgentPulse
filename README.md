@@ -90,14 +90,15 @@ to `~/.config/agentpulse/config.yaml`, then:
 
 [nlohmann/json]: https://github.com/nlohmann/json
 
-## Menu-bar app
+## Desktop app
 
-A native SwiftUI menu-bar app ([`app/`](app)) connects to the daemon over the
-same Unix socket and shows live system health, top processes, job health (with
-**Run**/**Retry** buttons), and recent alerts — and fires native macOS
-notifications when a new alert fires. You can **add and remove automations
-right from the app** (persisted in SQLite, so they survive restarts and never
-touch your hand-written `config.yaml`). Requires macOS 13+.
+A native SwiftUI app ([`app/`](app)) — a resizable **dashboard window** with
+system-health cards (CPU/memory/disk/thermal), top processes, an **Automations**
+panel where you can **add, run, retry, and remove** jobs, and a recent-alerts
+list. It also installs a **menu-bar item** for quick glances and fires native
+macOS notifications when an alert fires. Automations added in the app persist in
+SQLite (they survive restarts and never touch your hand-written `config.yaml`).
+Requires macOS 13+.
 
 ```sh
 ./app/make-app.sh                 # builds AgentPulse.app (menu-bar agent)
@@ -129,7 +130,7 @@ To remove:
 daemon/         C++20 daemon (agentpulsed) + agentpulse_core static lib
   src/          sources (metrics/, ipc/, db, paths, log)
 cli/            apctl — reference socket client
-app/            SwiftUI menu-bar app (SwiftPM) + make-app.sh
+app/            SwiftUI desktop app (dashboard window + menu-bar) + make-app.sh
 tests/          dependency-free test harness (ctest)
 packaging/      LaunchAgent plist template + install/uninstall scripts
 docs/           PROTOCOL.md — socket API

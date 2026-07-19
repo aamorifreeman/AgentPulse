@@ -1,12 +1,17 @@
 import SwiftUI
 import AppKit
 
-// Hides the Dock icon so AgentPulse lives only in the menu bar. When packaged
-// with make-app.sh, Info.plist's LSUIElement does the same; this covers the
-// bare-executable case too.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        // Regular app: dock icon + main window (plus the menu-bar extra).
+        NSApp.setActivationPolicy(.regular)
+    }
+
+    // Reopen the dashboard window when the dock icon is clicked.
+    func applicationShouldHandleReopen(_ sender: NSApplication,
+                                       hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { NSApp.activate(ignoringOtherApps: true) }
+        return true
     }
 }
 
@@ -16,6 +21,12 @@ struct AgentPulseApp: App {
     @StateObject private var store = StatusStore()
 
     var body: some Scene {
+        WindowGroup("AgentPulse") {
+            DashboardView().environmentObject(store)
+        }
+        .windowResizability(.contentSize)
+
+        // Bonus: a quick-glance menu-bar item backed by the same store.
         MenuBarExtra {
             MenuContentView().environmentObject(store)
         } label: {
@@ -24,7 +35,6 @@ struct AgentPulseApp: App {
         .menuBarExtraStyle(.window)
     }
 
-    // Shows a compact CPU readout beside the icon when data is available.
     private var menuBarLabel: some View {
         HStack(spacing: 3) {
             Image(systemName: "waveform.path.ecg")

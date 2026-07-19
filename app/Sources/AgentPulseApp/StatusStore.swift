@@ -20,6 +20,7 @@ final class StatusStore: ObservableObject {
     }
 
     func start() {
+        if timer != nil { return }  // idempotent; multiple scenes may call it
         Notifier.requestAuthorization()
         refresh()
         let t = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) {
