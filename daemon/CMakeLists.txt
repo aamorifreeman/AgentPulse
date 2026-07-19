@@ -3,6 +3,14 @@
 find_package(SQLite3 REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
+# CMake's FindSQLite3 names the imported target SQLite3::SQLite3 on newer CMake
+# (>= 3.28) but SQLite::SQLite3 on older versions. Provide the former in terms
+# of the latter so this builds regardless of the installed CMake.
+if(NOT TARGET SQLite3::SQLite3 AND TARGET SQLite::SQLite3)
+    add_library(SQLite3::SQLite3 INTERFACE IMPORTED)
+    target_link_libraries(SQLite3::SQLite3 INTERFACE SQLite::SQLite3)
+endif()
+
 # Core logic as a static library so both the daemon and the tests can link it.
 add_library(agentpulse_core STATIC
     src/log.cpp
