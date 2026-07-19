@@ -387,6 +387,47 @@ void test_scheduler_manual_run() {
     ::unlink((db_path + "-shm").c_str());
 }
 
+void test_dynamic_jobs() {
+    std::printf("[dynamic jobs]\n");
+    std::string db_path = "/tmp/agentpulse_dyn_" +
+                          std::to_string(::getpid()) + ".db";
+    ::unlink(db_path.c_str());
+
+    agentpulse::SharedState state;
+    {
+        agentpulse::Scheduler sched({}, db_path, state);  // no config jobs
+        sched.start();
+
+        agentpulse::Job job;
+        job.name = "ui-job";
+        job.command = "echo hi";
+        check(sched.add_job(job).empty(), "add_job succeeds");
+        check(!sched.add_job(job).empty(), "duplicate add rejected");
+        check(!sched.remove_job("missing").empty(), "remove unknown rejected");
+        check(sched.remove_job("ui-job").empty(), "remove ui job succeeds");
+        sched.stop();
+    }
+
+    // Add a job, then confirm it persists across a fresh scheduler instance.
+    {
+        agentpulse::Scheduler sched({}, db_path, state);
+        agentpulse::Job job;
+        job.name = "persisted";
+        job.command = "echo hi";
+        check(sched.add_job(job).empty(), "add persisted job");
+    }
+    {
+        agentpulse::Scheduler sched({}, db_path, state);
+        // Reloaded from job_defs with source=ui, so removal should succeed.
+        check(sched.remove_job("persisted").empty(),
+              "persisted job reloaded and removable");
+    }
+
+    ::unlink(db_path.c_str());
+    ::unlink((db_path + "-wal").c_str());
+    ::unlink((db_path + "-shm").c_str());
+}
+
 void test_self_sampler() {
     std::printf("[self_sampler]\n");
     agentpulse::SelfSampler s;
@@ -619,6 +660,7 @@ int main() {
     test_alert_engine();
     test_missed_run_detection();
     test_scheduler_retries_and_missed();
+    test_dynamic_jobs();
     test_self_sampler();
     test_history_and_runs();
 

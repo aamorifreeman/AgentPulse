@@ -28,6 +28,12 @@ std::string to_string(Condition c) {
     return "greater_than";
 }
 
+MissedRunPolicy missed_run_policy_from_string(const std::string& s) {
+    if (s == "run_on_wake") return MissedRunPolicy::RunOnWake;
+    if (s == "run_now") return MissedRunPolicy::RunNow;
+    return MissedRunPolicy::None;  // lenient: unknown -> none
+}
+
 namespace {
 
 MissedRunPolicy parse_policy(const std::string& s) {

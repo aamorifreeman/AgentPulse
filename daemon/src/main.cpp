@@ -293,6 +293,12 @@ int main(int argc, char** argv) {
         api.set_run_handler([&scheduler](const std::string& name) {
             return scheduler->request_run(name);
         });
+        api.set_add_job_handler([&scheduler](const agentpulse::Job& job) {
+            return scheduler->add_job(job);
+        });
+        api.set_remove_job_handler([&scheduler](const std::string& name) {
+            return scheduler->remove_job(name);
+        });
         scheduler->start();
     } catch (const std::exception& e) {
         agentpulse::log_error(std::string("scheduler init failed: ") +

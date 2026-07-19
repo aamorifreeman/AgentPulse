@@ -8,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "config/config.hpp"
 #include "db.hpp"
 #include "shared_state.hpp"
 
@@ -54,6 +55,7 @@ json job_to_json(const JobStatus& s) {
     json j{
         {"name", s.name},
         {"schedule", s.schedule_expr},
+        {"source", s.source},
         {"next_run", s.next_run},
         {"running", s.running},
     };
@@ -234,6 +236,76 @@ std::string Api::handle(const std::string& request) {
         }
         return json{{"ok", true}, {"cmd", "runs"}, {"job", req.arg},
                     {"runs", arr}}
+            .dump();
+    }
+
+    if (req.cmd == "add_job") {
+        if (!add_job_handler_) {
+            return json{{"ok", false}, {"error", "job control unavailable"}}
+                .dump();
+        }
+        auto body = json::parse(request, nullptr, /*allow_exceptions=*/false);
+        if (!body.is_object()) {
+            return json{{"ok", false}, {"error", "add_job requires a JSON body"}}
+                .dump();
+        }
+        auto str = [&](const char* k) -> std::string {
+            return body.contains(k) && body[k].is_string()
+                       ? body[k].get<std::string>()
+                       : std::string();
+        };
+        auto num = [&](const char* k) -> int {
+            return body.contains(k) && body[k].is_number()
+                       ? body[k].get<int>()
+                       : 0;
+        };
+
+        Job job;
+        job.name = str("name");
+        job.command = str("command");
+        job.schedule_expr = str("schedule");
+        job.timeout_seconds = num("timeout_seconds");
+        job.retries = num("retries");
+        if (body.contains("missed_run_policy")) {
+            job.missed_run_policy =
+                missed_run_policy_from_string(str("missed_run_policy"));
+        }
+        if (job.name.empty() || job.command.empty()) {
+            return json{{"ok", false},
+                        {"error", "name and command are required"}}
+                .dump();
+        }
+        if (!job.schedule_expr.empty()) {
+            auto cron = CronSchedule::parse(job.schedule_expr);
+            if (!cron) {
+                return json{{"ok", false},
+                            {"error", "invalid cron schedule: '" +
+                                          job.schedule_expr + "'"}}
+                    .dump();
+            }
+            job.schedule = std::move(cron);
+        }
+
+        std::string err = add_job_handler_(job);
+        if (!err.empty()) {
+            return json{{"ok", false}, {"error", err}}.dump();
+        }
+        return json{{"ok", true}, {"cmd", "add_job"}, {"job", job.name}}.dump();
+    }
+
+    if (req.cmd == "remove_job") {
+        if (!remove_job_handler_) {
+            return json{{"ok", false}, {"error", "job control unavailable"}}
+                .dump();
+        }
+        if (req.arg.empty()) {
+            return json{{"ok", false}, {"error", "missing job name"}}.dump();
+        }
+        std::string err = remove_job_handler_(req.arg);
+        if (!err.empty()) {
+            return json{{"ok", false}, {"error", err}}.dump();
+        }
+        return json{{"ok", true}, {"cmd", "remove_job"}, {"job", req.arg}}
             .dump();
     }
 

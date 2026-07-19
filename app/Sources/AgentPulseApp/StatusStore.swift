@@ -8,6 +8,7 @@ final class StatusStore: ObservableObject {
     @Published var status: StatusResponse?
     @Published var lastError: String?
     @Published var connected = false
+    @Published var actionError: String?
 
     private let client: SocketClient
     private var timer: Timer?
@@ -55,6 +56,55 @@ final class StatusStore: ObservableObject {
             try? await Task.sleep(nanoseconds: 500_000_000)
             await self.refresh()
         }
+    }
+
+    /// Adds a new automation. Reports failures via `actionError`.
+    func addJob(name: String, command: String, schedule: String,
+                timeoutSeconds: Int, retries: Int, missedPolicy: String) {
+        var body: [String: Any] = [
+            "cmd": "add_job",
+            "name": name,
+            "command": command,
+            "timeout_seconds": timeoutSeconds,
+            "retries": retries,
+            "missed_run_policy": missedPolicy,
+        ]
+        let trimmed = schedule.trimmingCharacters(in: .whitespaces)
+        if !trimmed.isEmpty { body["schedule"] = trimmed }
+        sendCommand(body)
+    }
+
+    /// Removes a user-managed automation.
+    func removeJob(_ name: String) {
+        sendCommand(["cmd": "remove_job", "job": name])
+    }
+
+    // Serializes a command dict to JSON, sends it, and surfaces any error.
+    private func sendCommand(_ body: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: body),
+              let line = String(data: data, encoding: .utf8) else {
+            actionError = "could not encode request"
+            return
+        }
+        let client = self.client
+        Task.detached {
+            do {
+                let resp = try client.send(line)
+                let obj = try JSONSerialization.jsonObject(with: resp)
+                    as? [String: Any]
+                let ok = obj?["ok"] as? Bool ?? false
+                let err = obj?["error"] as? String
+                await self.finishAction(ok: ok, error: err)
+            } catch {
+                await self.finishAction(ok: false,
+                                        error: String(describing: error))
+            }
+        }
+    }
+
+    private func finishAction(ok: Bool, error: String?) {
+        actionError = ok ? nil : (error ?? "request failed")
+        refresh()
     }
 
     private func apply(_ status: StatusResponse) {

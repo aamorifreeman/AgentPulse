@@ -51,6 +51,7 @@ struct SystemSnapshot {
 struct JobStatus {
     std::string name;
     std::string schedule_expr;   // empty if the job has no schedule
+    std::string source = "config";  // "config" or "ui"
     std::int64_t next_run = 0;   // unix seconds, 0 if not scheduled
     bool running = false;
 

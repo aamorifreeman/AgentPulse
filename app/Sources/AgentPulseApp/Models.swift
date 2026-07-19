@@ -57,10 +57,12 @@ struct ProcInfo: Codable, Identifiable {
 struct JobStatus: Codable, Identifiable {
     let name: String
     let schedule: String
+    let source: String?
     let nextRun: Int
     let running: Bool
     let lastRun: LastRun?
     var id: String { name }
+    var isUserManaged: Bool { source == "ui" }
 }
 
 struct LastRun: Codable {

@@ -17,6 +17,7 @@ enum class MissedRunPolicy {
 };
 
 std::string to_string(MissedRunPolicy policy);
+MissedRunPolicy missed_run_policy_from_string(const std::string& s);
 
 // A monitored automation, loaded from config.yaml.
 struct Job {
@@ -27,6 +28,7 @@ struct Job {
     MissedRunPolicy missed_run_policy = MissedRunPolicy::None;
     int timeout_seconds = 0;  // 0 = no timeout
     int retries = 0;          // additional attempts on failure (M5)
+    std::string source = "config";  // "config" (config.yaml) or "ui"
 };
 
 // A comparison operator for an alert rule.

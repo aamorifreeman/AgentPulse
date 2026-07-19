@@ -147,15 +147,18 @@ struct MenuContentView: View {
 
     @ViewBuilder private var jobsSection: some View {
         let jobs = store.status?.jobs ?? []
-        if !jobs.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("JOBS").font(.caption).foregroundStyle(.secondary)
-                ForEach(jobs) { job in
-                    jobRow(job)
-                }
+        VStack(alignment: .leading, spacing: 6) {
+            Text("AUTOMATIONS").font(.caption).foregroundStyle(.secondary)
+            if jobs.isEmpty {
+                Text("No automations yet — add one below.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
-            Divider()
+            ForEach(jobs) { job in
+                jobRow(job)
+            }
+            AddJobForm()
         }
+        Divider()
     }
 
     private func jobRow(_ job: JobStatus) -> some View {
@@ -185,6 +188,15 @@ struct MenuContentView: View {
             }
             .buttonStyle(.borderless)
             .disabled(job.running)
+            if job.isUserManaged {
+                Button {
+                    store.removeJob(job.name)
+                } label: {
+                    Image(systemName: "trash").foregroundStyle(.red)
+                }
+                .buttonStyle(.borderless)
+                .help("Remove automation")
+            }
         }
     }
 

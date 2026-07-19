@@ -46,6 +46,17 @@ struct AlertRecord {
     std::string attribution;
 };
 
+// A UI-managed job definition (persisted so it survives restarts). Jobs
+// declared in config.yaml are not stored here.
+struct JobDef {
+    std::string name;
+    std::string command;
+    std::string schedule_expr;         // empty = unscheduled
+    std::string missed_run_policy = "none";
+    int timeout_seconds = 0;
+    int retries = 0;
+};
+
 // Minimal RAII wrapper around a SQLite connection.
 //
 // Not thread-safe: SQLite connections must not be shared across threads
@@ -98,6 +109,11 @@ public:
 
     // Returns up to `limit` most-recent alerts, newest first.
     std::vector<AlertRecord> recent_alerts(int limit);
+
+    // UI-managed job definitions (persisted across restarts).
+    void upsert_job_def(const JobDef& def);
+    void delete_job_def(const std::string& name);
+    std::vector<JobDef> load_job_defs();
 
     sqlite3* handle() { return db_; }
 

@@ -301,6 +301,82 @@ std::vector<AlertRecord> Database::recent_alerts(int limit) {
     return out;
 }
 
+void Database::upsert_job_def(const JobDef& def) {
+    static const char* kSql =
+        "INSERT INTO job_defs(name, command, schedule_expr, missed_run_policy,"
+        "                     timeout_seconds, retries)"
+        " VALUES(?, ?, ?, ?, ?, ?)"
+        " ON CONFLICT(name) DO UPDATE SET"
+        "   command=excluded.command,"
+        "   schedule_expr=excluded.schedule_expr,"
+        "   missed_run_policy=excluded.missed_run_policy,"
+        "   timeout_seconds=excluded.timeout_seconds,"
+        "   retries=excluded.retries;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw DbError(std::string("prepare upsert_job_def: ") +
+                      sqlite3_errmsg(db_));
+    }
+    sqlite3_bind_text(stmt, 1, def.name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, def.command.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, def.schedule_expr.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, def.missed_run_policy.c_str(), -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 5, def.timeout_seconds);
+    sqlite3_bind_int(stmt, 6, def.retries);
+
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        throw DbError(std::string("step upsert_job_def: ") +
+                      sqlite3_errmsg(db_));
+    }
+}
+
+void Database::delete_job_def(const std::string& name) {
+    static const char* kSql = "DELETE FROM job_defs WHERE name = ?;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw DbError(std::string("prepare delete_job_def: ") +
+                      sqlite3_errmsg(db_));
+    }
+    sqlite3_bind_text(stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        throw DbError(std::string("step delete_job_def: ") +
+                      sqlite3_errmsg(db_));
+    }
+}
+
+std::vector<JobDef> Database::load_job_defs() {
+    static const char* kSql =
+        "SELECT name, command, schedule_expr, missed_run_policy,"
+        "       timeout_seconds, retries FROM job_defs ORDER BY name;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw DbError(std::string("prepare load_job_defs: ") +
+                      sqlite3_errmsg(db_));
+    }
+    auto text = [&](int col) -> std::string {
+        const unsigned char* s = sqlite3_column_text(stmt, col);
+        return s ? reinterpret_cast<const char*>(s) : "";
+    };
+    std::vector<JobDef> out;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        JobDef d;
+        d.name = text(0);
+        d.command = text(1);
+        d.schedule_expr = text(2);
+        d.missed_run_policy = text(3);
+        d.timeout_seconds = sqlite3_column_int(stmt, 4);
+        d.retries = sqlite3_column_int(stmt, 5);
+        out.push_back(std::move(d));
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
 void migrate(Database& db) {
     db.exec(
         "CREATE TABLE IF NOT EXISTS meta("
@@ -343,7 +419,15 @@ void migrate(Database& db) {
         "  message    TEXT,"
         "  attribution TEXT);"
 
-        "CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts);");
+        "CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts);"
+
+        "CREATE TABLE IF NOT EXISTS job_defs("
+        "  name              TEXT PRIMARY KEY,"
+        "  command           TEXT NOT NULL,"
+        "  schedule_expr     TEXT,"
+        "  missed_run_policy TEXT NOT NULL DEFAULT 'none',"
+        "  timeout_seconds   INTEGER NOT NULL DEFAULT 0,"
+        "  retries           INTEGER NOT NULL DEFAULT 0);");
 }
 
 }  // namespace agentpulse

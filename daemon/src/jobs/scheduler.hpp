@@ -43,6 +43,14 @@ public:
     // Requests an immediate run of `name`. Returns false if no such job.
     bool request_run(const std::string& name);
 
+    // Adds a UI-managed job (persisted). Returns "" on success or an error
+    // message (e.g. duplicate name). Thread-safe.
+    std::string add_job(const Job& job);
+
+    // Removes a UI-managed job (config.yaml jobs cannot be removed). Returns
+    // "" on success or an error message. Thread-safe.
+    std::string remove_job(const std::string& name);
+
     // Signals that the machine just woke; triggers a missed-run scan on the
     // next loop tick. Safe to call from another thread (e.g. a power monitor).
     void notify_wake();
@@ -61,7 +69,7 @@ private:
     void enqueue(const std::string& name, const std::string& trigger);
     void scan_missed();            // detect & queue runs skipped while down/asleep
 
-    const Job* find_job(const std::string& name) const;
+    const Job* find_job(const std::string& name) const;  // caller holds mutex_
 
     std::vector<Job> jobs_;
     std::string db_path_;

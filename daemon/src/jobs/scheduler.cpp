@@ -1,5 +1,6 @@
 #include "jobs/scheduler.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <utility>
@@ -12,6 +13,34 @@ namespace agentpulse {
 
 namespace {
 std::int64_t now_unix() { return std::time(nullptr); }
+
+// Builds a runtime Job from a persisted UI job definition.
+Job job_from_def(const JobDef& def) {
+    Job job;
+    job.name = def.name;
+    job.command = def.command;
+    job.schedule_expr = def.schedule_expr;
+    if (!def.schedule_expr.empty()) {
+        job.schedule = CronSchedule::parse(def.schedule_expr);
+    }
+    job.missed_run_policy = missed_run_policy_from_string(def.missed_run_policy);
+    job.timeout_seconds = def.timeout_seconds;
+    job.retries = def.retries;
+    job.source = "ui";
+    return job;
+}
+
+// Builds a persistable definition from a runtime Job.
+JobDef def_from_job(const Job& job) {
+    JobDef def;
+    def.name = job.name;
+    def.command = job.command;
+    def.schedule_expr = job.schedule_expr;
+    def.missed_run_policy = to_string(job.missed_run_policy);
+    def.timeout_seconds = job.timeout_seconds;
+    def.retries = job.retries;
+    return def;
+}
 }  // namespace
 
 std::optional<std::time_t> detect_missed_run(const CronSchedule& schedule,
@@ -30,6 +59,13 @@ Scheduler::Scheduler(std::vector<Job> jobs, const std::string& db_path,
     : jobs_(std::move(jobs)), db_path_(db_path), state_(state) {
     db_ = std::make_unique<Database>(db_path_);
     migrate(*db_);  // idempotent; ensures the runs table exists
+
+    // Merge persisted UI-managed jobs (config.yaml jobs win on name clash).
+    for (auto& def : db_->load_job_defs()) {
+        if (find_job(def.name) == nullptr) {
+            jobs_.push_back(job_from_def(def));
+        }
+    }
 
     const std::int64_t now = now_unix();
     for (const auto& job : jobs_) {
@@ -82,9 +118,77 @@ void Scheduler::stop() {
 }
 
 bool Scheduler::request_run(const std::string& name) {
-    if (find_job(name) == nullptr) return false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (find_job(name) == nullptr) return false;
+    }
     enqueue(name, "manual");
     return true;
+}
+
+std::string Scheduler::add_job(const Job& job) {
+    if (job.name.empty()) return "job name is required";
+    if (job.command.empty()) return "job command is required";
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (find_job(job.name) != nullptr) {
+            return "a job named '" + job.name + "' already exists";
+        }
+    }
+
+    Job stored = job;
+    stored.source = "ui";
+    {
+        std::lock_guard<std::mutex> lock(db_mutex_);
+        try {
+            db_->upsert_job_def(def_from_job(stored));
+        } catch (const DbError& e) {
+            return std::string("could not persist job: ") + e.what();
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        jobs_.push_back(stored);
+        if (stored.schedule) {
+            if (auto next = stored.schedule->next_after(now_unix())) {
+                next_run_[stored.name] = *next;
+            }
+        }
+    }
+    log_info("added job '" + stored.name + "'");
+    publish_status();
+    return "";
+}
+
+std::string Scheduler::remove_job(const std::string& name) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const Job* job = find_job(name);
+        if (job == nullptr) return "no such job: '" + name + "'";
+        if (job->source != "ui") {
+            return "job '" + name + "' is defined in config.yaml";
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(db_mutex_);
+        try {
+            db_->delete_job_def(name);
+        } catch (const DbError& e) {
+            return std::string("could not delete job: ") + e.what();
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        jobs_.erase(std::remove_if(jobs_.begin(), jobs_.end(),
+                                   [&](const Job& j) { return j.name == name; }),
+                    jobs_.end());
+        next_run_.erase(name);
+        last_runs_.erase(name);
+        missed_handled_.erase(name);
+    }
+    log_info("removed job '" + name + "'");
+    publish_status();
+    return "";
 }
 
 void Scheduler::notify_wake() { wake_pending_.store(true); }
@@ -96,10 +200,21 @@ void Scheduler::enqueue(const std::string& name, const std::string& trigger) {
 
 void Scheduler::scan_missed() {
     const std::int64_t now = now_unix();
-    for (const auto& job : jobs_) {
-        if (!job.schedule) continue;
-        if (job.missed_run_policy == MissedRunPolicy::None) continue;
 
+    // Snapshot the scheduled, policy-enabled jobs under lock so we don't
+    // iterate jobs_ while add_job/remove_job may mutate it.
+    std::vector<Job> candidates;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& job : jobs_) {
+            if (job.schedule &&
+                job.missed_run_policy != MissedRunPolicy::None) {
+                candidates.push_back(job);
+            }
+        }
+    }
+
+    for (const auto& job : candidates) {
         std::int64_t last_run_ts = 0;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -288,6 +403,7 @@ void Scheduler::publish_status() {
             JobStatus s;
             s.name = job.name;
             s.schedule_expr = job.schedule_expr;
+            s.source = job.source;
 
             if (auto it = next_run_.find(job.name); it != next_run_.end()) {
                 s.next_run = it->second;

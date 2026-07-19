@@ -95,7 +95,9 @@ to `~/.config/agentpulse/config.yaml`, then:
 A native SwiftUI menu-bar app ([`app/`](app)) connects to the daemon over the
 same Unix socket and shows live system health, top processes, job health (with
 **Run**/**Retry** buttons), and recent alerts — and fires native macOS
-notifications when a new alert fires. Requires macOS 13+.
+notifications when a new alert fires. You can **add and remove automations
+right from the app** (persisted in SQLite, so they survive restarts and never
+touch your hand-written `config.yaml`). Requires macOS 13+.
 
 ```sh
 ./app/make-app.sh                 # builds AgentPulse.app (menu-bar agent)

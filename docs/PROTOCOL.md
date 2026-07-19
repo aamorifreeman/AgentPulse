@@ -33,11 +33,27 @@ A request is either:
 | `history <metric> [seconds]` | Metric samples over a recent window (default 3600s). |
 | `runs <job> [limit]`| Recent runs for a job (default 20).            |
 | `run <name>`        | Trigger an immediate run of a job.             |
+| `add_job`           | Add a UI-managed automation (JSON body, persisted). |
+| `remove_job <name>` | Remove a UI-managed automation.                |
 
 `run` takes a job name, as JSON `{"cmd":"run","job":"email-scan"}` or the bare
 form `run email-scan`. `history`/`runs` accept a bare second argument
 (`history system.cpu.percent 600`) or JSON (`{"cmd":"history",
 "metric":"system.cpu.percent","seconds":600}`).
+
+`add_job` requires a JSON body; `name` and `command` are required, the rest
+optional:
+
+```json
+{"cmd":"add_job","name":"backup","command":"~/bin/backup.sh",
+ "schedule":"0 2 * * *","timeout_seconds":600,"retries":1,
+ "missed_run_policy":"run_on_wake"}
+```
+
+It returns `{"ok":true,"cmd":"add_job","job":"backup"}` or `{"ok":false,
+"error":"..."}` (duplicate name, invalid cron, etc.). UI-managed jobs persist
+in SQLite and reload on restart; jobs declared in `config.yaml`
+(`"source":"config"`) can't be removed via `remove_job`.
 
 `run` takes a job name, as JSON `{"cmd":"run","job":"email-scan"}` or the bare
 form `run email-scan`.
