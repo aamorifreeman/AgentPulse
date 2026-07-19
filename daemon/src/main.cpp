@@ -74,7 +74,6 @@ void sampler_loop(agentpulse::Database& db, agentpulse::SharedState& state,
     agentpulse::SelfSampler self;
     auto engine = std::make_unique<agentpulse::AlertEngine>(std::move(rules),
                                                             quiet);
-    std::vector<agentpulse::AlertInfo> recent_alerts;
     cpu.sample();     // establish CPU baseline
     procs.top(5);     // establish per-process CPU baseline
     self.sample();    // establish self CPU baseline
@@ -216,13 +215,7 @@ void sampler_loop(agentpulse::Database& db, agentpulse::SharedState& state,
                 info.message = e.message;
                 info.attribution = e.attribution;
                 info.notify = e.notify;
-                recent_alerts.insert(recent_alerts.begin(), std::move(info));
-            }
-            if (recent_alerts.size() > kRecentAlerts) {
-                recent_alerts.resize(kRecentAlerts);
-            }
-            if (!events.empty()) {
-                state.set_alerts(recent_alerts);
+                state.add_alert(std::move(info), kRecentAlerts);
             }
             next = now + interval;
         }

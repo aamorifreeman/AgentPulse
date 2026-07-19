@@ -4,7 +4,8 @@ A lightweight **macOS system & automation reliability monitor**. A C++20 daemon
 schedules and monitors local automations (Python/shell scripts, launchd-style jobs)
 *and* samples system health (CPU, memory, disk, thermal), correlates the two — e.g.
 "this job was missed because the Mac was asleep" — and surfaces actionable alerts
-through a native menu-bar app.
+(a failing automation, a missed run, or a system threshold crossed) through a
+native desktop app.
 
 See [`SCOPE.md`](SCOPE.md) for architecture, decisions, and milestones.
 
@@ -47,8 +48,13 @@ The daemon is feature-complete, with a native **SwiftUI menu-bar app** on top
   per-process CPU/RSS (`libproc`), and the daemon's own overhead.
 - **Scheduler** (`jobs/`): cron scheduling, `posix_spawn` supervision with
   stdout/stderr/exit-code/timeout capture and retries, missed-run detection.
-- **Alert engine** (`alerts/`): duration/cooldown/recovery/severity, process
-  attribution, quiet hours — pure and unit-tested.
+  Raises an alert (with a notification) when a job's final attempt fails or a
+  scheduled run is missed.
+- **Alert engine** (`alerts/`): two sources feed one alerts stream —
+  system-metric rules (duration/cooldown/recovery/severity, process
+  attribution, quiet hours; the rule logic is pure and unit-tested) and
+  job-outcome alerts (failed runs, missed runs) from the scheduler. Job alerts
+  are always delivered; they bypass quiet hours.
 - **Power** (`power/`): IOKit sleep/wake for wake recovery.
 - **IPC** (`ipc/`): Unix-domain-socket server + JSON API.
 
@@ -84,7 +90,8 @@ to `~/.config/agentpulse/config.yaml`, then:
 ./build/daemon/agentpulsed &          # samples system + runs scheduled jobs
 ./build/cli/apctl status              # CPU + job health
 ./build/cli/apctl jobs                # configured jobs, next/last run
-./build/cli/apctl run email-scan      # trigger a job now
+./build/cli/apctl alerts              # recent alerts (system + job failures)
+./build/cli/apctl "run email-scan"    # trigger a job now (quote multi-word cmds)
 ./build/cli/apctl --watch 2           # live view
 ```
 
@@ -96,9 +103,10 @@ A native SwiftUI app ([`app/`](app)) — a resizable **dashboard window** with
 system-health cards (CPU/memory/disk/thermal), top processes, an **Automations**
 panel where you can **add, run, retry, and remove** jobs, and a recent-alerts
 list. It also installs a **menu-bar item** for quick glances and fires native
-macOS notifications when an alert fires. Automations added in the app persist in
-SQLite (they survive restarts and never touch your hand-written `config.yaml`).
-Requires macOS 13+.
+macOS notifications when an alert fires — a system-health threshold crossed, or
+an automation that failed or missed its schedule. Automations added in the app
+persist in SQLite (they survive restarts and never touch your hand-written
+`config.yaml`). Requires macOS 13+.
 
 ```sh
 ./app/make-app.sh                 # builds AgentPulse.app (menu-bar agent)

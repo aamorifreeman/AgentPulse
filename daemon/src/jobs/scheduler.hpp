@@ -69,6 +69,12 @@ private:
     void enqueue(const std::string& name, const std::string& trigger);
     void scan_missed();            // detect & queue runs skipped while down/asleep
 
+    // Records a job alert (failure or missed run): persists it, publishes it to
+    // SharedState so it shows in the UI, and posts a native notification.
+    void emit_alert(const std::string& job_name, const std::string& severity,
+                    const std::string& message, const std::string& attribution,
+                    double value);
+
     const Job* find_job(const std::string& name) const;  // caller holds mutex_
 
     std::vector<Job> jobs_;

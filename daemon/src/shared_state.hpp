@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -125,6 +126,15 @@ public:
     void set_alerts(std::vector<AlertInfo> alerts) {
         std::lock_guard<std::mutex> lock(mutex_);
         alerts_ = std::move(alerts);
+    }
+
+    // Prepends one alert (newest-first) and trims to `cap`. Safe to call from
+    // any thread — both the sampler (system rules) and the scheduler (job
+    // failures/misses) feed this single ring buffer.
+    void add_alert(AlertInfo alert, std::size_t cap = 25) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        alerts_.insert(alerts_.begin(), std::move(alert));
+        if (alerts_.size() > cap) alerts_.resize(cap);
     }
 
     std::vector<AlertInfo> alerts() const {

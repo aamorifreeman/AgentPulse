@@ -5,6 +5,7 @@
 #include <ctime>
 #include <utility>
 
+#include "alerts/notifier.hpp"
 #include "jobs/process_runner.hpp"
 #include "log.hpp"
 #include "shared_state.hpp"
@@ -236,6 +237,11 @@ void Scheduler::scan_missed() {
         log_info("missed run detected for '" + job.name + "' (scheduled " +
                  std::to_string(*missed) + ", policy " +
                  to_string(job.missed_run_policy) + ") — queuing");
+        emit_alert(job.name, "warning",
+                   "scheduled run was missed (Mac asleep or daemon down) — "
+                   "recovering now",
+                   "policy: " + to_string(job.missed_run_policy),
+                   static_cast<double>(*missed));
         enqueue(job.name, "missed");
     }
 }
@@ -373,6 +379,27 @@ void Scheduler::worker(Job job, std::string trigger, RunningTask* task) {
         }
     }
 
+    // If the final attempt still failed (and we aren't shutting down), raise a
+    // job alert so the failure surfaces in the UI and a notification fires.
+    if (active_.load() && res.status != RunStatus::Success) {
+        // Surface the last non-empty stderr line to aid diagnosis (trimmed).
+        std::string detail;
+        const std::string& err = res.stderr_text;
+        auto end = err.find_last_not_of(" \t\r\n");
+        if (end != std::string::npos) {
+            auto start = err.find_last_of('\n', end);
+            start = (start == std::string::npos) ? 0 : start + 1;
+            detail = err.substr(start, end - start + 1);
+            if (detail.size() > 160) detail = detail.substr(0, 157) + "...";
+        }
+        emit_alert(job.name, "serious",
+                   "run " + to_string(res.status) + " (exit " +
+                       std::to_string(res.exit_code) + ", after " +
+                       std::to_string(attempts) + " attempt" +
+                       (attempts == 1 ? "" : "s") + ")",
+                   detail, static_cast<double>(res.exit_code));
+    }
+
     // Signal completion last so the reaper only joins a returning thread.
     task->done.store(true);
 }
@@ -393,6 +420,53 @@ void Scheduler::reap_finished() {
     for (auto& task : finished) {
         if (task->thread.joinable()) task->thread.join();
     }
+}
+
+void Scheduler::emit_alert(const std::string& job_name,
+                           const std::string& severity,
+                           const std::string& message,
+                           const std::string& attribution, double value) {
+    const std::int64_t ts = now_unix();
+
+    // Persist to the alerts table (scheduler's own connection).
+    AlertRecord rec;
+    rec.ts = ts;
+    rec.rule_name = job_name;
+    rec.severity = severity;
+    rec.metric = "job";
+    rec.kind = "firing";
+    rec.value = value;
+    rec.threshold = 0.0;
+    rec.message = message;
+    rec.attribution = attribution;
+    {
+        std::lock_guard<std::mutex> lock(db_mutex_);
+        try {
+            db_->insert_alert(rec);
+        } catch (const DbError& e) {
+            log_warn(std::string("insert_alert (job) failed: ") + e.what());
+        }
+    }
+
+    // Publish to the shared alerts ring so it shows in the UI and the app posts
+    // a notification, then also fire the daemon-side native notification.
+    AlertInfo info;
+    info.ts = ts;
+    info.rule_name = job_name;
+    info.severity = severity;
+    info.metric = "job";
+    info.kind = "firing";
+    info.value = value;
+    info.threshold = 0.0;
+    info.message = message;
+    info.attribution = attribution;
+    info.notify = true;
+    state_.add_alert(std::move(info));
+
+    log_info("ALERT firing [" + severity + "] " + job_name + ": " + message);
+    std::string body = message;
+    if (!attribution.empty()) body += "\n" + attribution;
+    send_notification("AgentPulse: " + job_name, body);
 }
 
 void Scheduler::publish_status() {
